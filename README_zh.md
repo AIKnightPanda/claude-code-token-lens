@@ -2,7 +2,7 @@
 
 [🇺🇸 English Version](./README.md)
 
-![Claude Code Token Lens](public/dashboard_preview.png)
+![Claude Code Token Lens](public/dashboard_preview_CN.png)
 
 **Claude Code Token Lens** 是一款美观、本地优先的 AI 编程助手 Token 使用量追踪器和分析面板。
 
