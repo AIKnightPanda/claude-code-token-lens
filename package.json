@@ -2,14 +2,24 @@
   "name": "claude-code-token-lens",
   "version": "1.0.0",
   "description": "A beautiful, local-first usage tracker and dashboard for AI coding agents (Claude Code, etc.).",
-  "keywords": ["claude", "claude-code", "ai-agents", "tokens", "dashboard", "usage-tracker", "nextjs"],
-  "author": "Open Source",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "ai-agents",
+    "tokens",
+    "dashboard",
+    "usage-tracker",
+    "nextjs"
+  ],
+  "author": "",
   "license": "MIT",
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "start": "next start -H 127.0.0.1",
+    "lint": "eslint",
+    "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.40.0",
@@ -21,5 +31,8 @@
   "devDependencies": {
     "eslint": "^9",
     "eslint-config-next": "16.3.4"
+  },
+  "engines": {
+    "node": ">=18.17"
   }
 }

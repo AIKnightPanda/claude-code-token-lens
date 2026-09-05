@@ -40,6 +40,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local data
+# local data (contains prompt text - never commit)
 /data/
-blocks_test.json
+
+# Next.js 自动生成的 agent 规则文件
+/AGENTS.md
+/CLAUDE.md
+
+# 本地编辑器/工具配置
+/.claude/

@@ -104,16 +104,24 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 }
 
 /* Grids */
+/* 六个统计块。宽屏下排成一行，避免占掉太多首屏版面；
+   窄屏逐级回落到 3 列 / 2 列。 */
 .summary-grid {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 24px;
-  margin-bottom: 48px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 32px;
 }
 
 @media (min-width: 768px) {
   .summary-grid {
     grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (min-width: 1180px) {
+  .summary-grid {
+    grid-template-columns: repeat(6, 1fr);
   }
 }
 
@@ -150,11 +158,20 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
   margin-bottom: 24px;
 }
 
+/* 图标居左、标题+数值居右。整体只有一个图标的高度，不再上下堆叠。
+   container-type 让下面的 @container 能按「这一块自己有多宽」来降级，
+   而不是按视口宽度猜——同一个视口下列数变了，每块的宽度也会变。 */
 .stat-card {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 28px;
+  gap: 12px;
+  padding: 16px 18px;
+  container-type: inline-size;
+}
+
+/* flex 子项默认 min-width:auto，不加这行长数值会把卡片顶宽 */
+.stat-text {
+  min-width: 0;
 }
 
 .hover-lift {
@@ -167,9 +184,10 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 }
 
 .stat-icon {
-  width: 64px;
-  height: 64px;
-  border-radius: 20px;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  border-radius: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -177,22 +195,83 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 }
 
 .stat-title {
-  font-size: 0.95rem;
+  font-size: 0.72rem;
   font-weight: 500;
   color: var(--gray-500);
   margin-top: 0;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
+  /* 标题比数值可牺牲：放不下就省略号，不换行撑高卡片 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stat-value {
-  font-size: 2rem;
+  font-size: 1.5rem;
   font-weight: 700;
   color: var(--gray-900);
-  line-height: 1;
+  line-height: 1.1;
   margin: 0;
   letter-spacing: -0.02em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 默认显示完整值，紧凑写法藏着；窄到放不下时由 @container 对调 */
+.stat-value-compact { display: none; }
+
+/* ── 卡片变窄后的降级 ──────────────────────────────────
+   阈值按「这个长度的数值在这个宽度下还放不放得下」实测定：
+   可用文字宽 ≈ 容器宽(已扣内边距) - 图标 42/36 - 间距 12。
+   注意 @container 内不能改 .stat-card 自己（元素查的是祖先容器），
+   只能改它的后代。 */
+@container (max-width: 300px) {
+  .stat-value { font-size: 1.25rem; }
+}
+
+@container (max-width: 190px) {
+  .stat-icon { width: 36px; height: 36px; border-radius: 11px; }
+  .stat-icon svg { width: 18px; height: 18px; }
+}
+
+/* 窄到连标题都放不下时，宁可让它折成两行，也不要截成「TOTAL CO…」 */
+@container (max-width: 170px) {
+  .stat-title {
+    white-space: normal;
+    line-height: 1.25;
+    font-size: 0.65rem;
+    letter-spacing: 0.01em;
+    /* 大写 + 字距在这个宽度下会把 Conversations 挤到断词，
+       这里换回原样式的常规大小写，正好能一行放下 */
+    text-transform: none;
+    overflow-wrap: break-word;
+  }
+}
+
+/* 15 位数（千亿级 token） */
+@container (max-width: 210px) {
+  .stat-value.len-xxl .stat-value-full { display: none; }
+  .stat-value.len-xxl .stat-value-compact { display: inline; }
+}
+
+/* 12~13 位数 */
+@container (max-width: 185px) {
+  .stat-value.len-xl .stat-value-full { display: none; }
+  .stat-value.len-xl .stat-value-compact { display: inline; }
+}
+
+/* 11 位 */
+@container (max-width: 155px) {
+  .stat-value.len-lg .stat-value-full { display: none; }
+  .stat-value.len-lg .stat-value-compact { display: inline; }
+}
+
+/* 9~10 位，例如 $1,751.87 */
+@container (max-width: 140px) {
+  .stat-value.len-md .stat-value-full { display: none; }
+  .stat-value.len-md .stat-value-compact { display: inline; }
 }
 
 /* Colors and Icons */
@@ -553,4 +632,317 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 .filter-bubble-close:hover {
   opacity: 1;
   transform: scale(1.1);
+}
+
+/* ── 工具类 ─────────────────────────────────────────────
+   页面里一直在用这几个 Tailwind 风格的类名，但样式表中从未定义，
+   等于一直没生效。这里补齐。 */
+.text-center { text-align: center; }
+.text-xs { font-size: 0.75rem; }
+.text-gray-400 { color: var(--gray-400); }
+.text-gray-500 { color: var(--gray-500); }
+.text-gray-700 { color: var(--gray-700); }
+.text-gray-800 { color: var(--gray-800); }
+.text-green-600 { color: #059669; }
+.text-purple-600 { color: #7c3aed; }
+
+/* ── 成本口径提示条 ───────────────────────────────────── */
+.cost-basis-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  border: 1px solid var(--gray-200, #e5e7eb);
+  border-left: 3px solid var(--indigo-600, #6366f1);
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.04);
+  color: var(--gray-600, #4b5563);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.cost-basis-note svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--indigo-600, #6366f1);
+}
+
+.cost-basis-note strong {
+  color: var(--gray-800, #1f2937);
+  margin-right: 6px;
+}
+
+.cost-basis-note em {
+  font-style: normal;
+  color: #b45309;
+}
+
+/* ── 页脚解析统计 ─────────────────────────────────────── */
+.footer-stats {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--gray-400, #9ca3af);
+}
+
+/* 表头排序可聚焦，键盘操作时要有可见焦点圈 */
+.data-table th[tabindex]:focus-visible {
+  outline: 2px solid var(--indigo-600, #6366f1);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+/* 时间范围下拉，和按钮保持同一视觉语言 */
+select.refresh-btn {
+  appearance: none;
+  padding-right: 14px;
+  cursor: pointer;
+}
+
+/* 续接会话标记：内容全部继承自更早的会话，数字为 0 但不应从列表里消失 */
+.replay-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--gray-100, #f3f4f6);
+  color: var(--gray-500, #6b7280);
+  font-size: 0.68rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ── 用量 vs 成本对比图 ──────────────────────────────── */
+.vvc-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+.vvc-colhead {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  fill: var(--gray-400, #9ca3af);
+}
+
+.vvc-seglabel {
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--gray-600, #4b5563);
+}
+
+.vvc-table {
+  width: 100%;
+  margin-top: 14px;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.vvc-table th {
+  padding: 4px 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gray-400, #9ca3af);
+  border-bottom: 1px solid var(--gray-200, #e5e7eb);
+  white-space: nowrap;
+}
+
+.vvc-table td {
+  padding: 6px;
+  color: var(--gray-700, #374151);
+  border-bottom: 1px solid rgba(229, 231, 235, 0.5);
+  white-space: nowrap;
+}
+
+.vvc-table tbody tr:last-child td { border-bottom: none; }
+
+.vvc-row-active td { background: rgba(99, 102, 241, 0.06); }
+
+.vvc-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 7px;
+  vertical-align: baseline;
+}
+
+.vvc-sub {
+  margin-left: 6px;
+  font-size: 0.66rem;
+  color: var(--gray-400, #9ca3af);
+}
+
+.vvc-num { font-weight: 600; color: var(--gray-800, #1f2937); }
+
+/* 有效单价是这张图的落点：同样一百万 token，不同类型差出几十倍 */
+.vvc-rate { font-weight: 700; color: var(--indigo-600, #6366f1); }
+
+.vvc-hint {
+  margin: 10px 2px 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--gray-500, #6b7280);
+}
+
+/* 成本提示条的关闭按钮 */
+.cost-basis-note {
+  position: relative;
+  padding-right: 40px;
+}
+
+.cost-basis-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--gray-400, #9ca3af);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+
+.cost-basis-close:hover {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--indigo-600, #6366f1);
+}
+
+/* 提示条关掉后，从总成本卡片重新打开的入口 */
+.stat-info-btn {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--gray-400, #9ca3af);
+  cursor: pointer;
+  vertical-align: -2px;
+  transition: color .15s;
+}
+
+.stat-info-btn:hover { color: var(--indigo-600, #6366f1); }
+
+/* 图表结论：不同档位之间的单价倍数 */
+.vvc-spread { color: var(--gray-700, #374151); }
+
+/* 六列时每块只有约 175px，横向内边距收一点，
+   多出来的十几像素刚好够 $1,751.87 这类数值不用降级成 $1.8K */
+@media (min-width: 1180px) {
+  .stat-card { padding: 14px 14px; }
+}
+
+/* 卡片变矮变窄后圆角也相应收一点，否则显得头重脚轻 */
+.summary-grid .card { border-radius: 18px; }
+
+/* 斜杠命令标记：让「这一行是我发的指令」和普通提问区分开 */
+.command-badge {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--indigo-600, #6366f1);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: help;
+}
+
+/* 压缩规模标注 */
+.compaction-note {
+  margin-top: 4px;
+  font-size: 0.7rem;
+  color: var(--gray-500, #6b7280);
+  cursor: help;
+}
+
+/* 成本未被日志记录时，显示文字而非 $0.00，避免让人以为这次操作是免费的 */
+.cost-unlogged {
+  font-weight: 500;
+  font-style: italic;
+  color: var(--gray-400, #9ca3af);
+  cursor: help;
+}
+
+/* 后台任务通知：不是用户打字发起的，但确实产生开销，用另一种颜色区分 */
+.notification-badge {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: help;
+}
+
+/* turn 明细里的触发来源：说明这一轮是被后台任务唤醒产生的 */
+.turn-trigger {
+  margin-top: 5px;
+  max-width: 340px;
+  cursor: help;
+}
+
+.turn-trigger-text {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: var(--gray-500, #6b7280);
+  word-break: break-word;
+}
+
+/* 交互明细页顶部的上下文说明（取代原来的可删除筛选气泡） */
+.turns-context {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--gray-50, #f9fafb);
+  border: 1px solid var(--gray-200, #e5e7eb);
+  font-size: 0.8rem;
+}
+
+.turns-context-label {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gray-400, #9ca3af);
+}
+
+.turns-context-prompt {
+  flex: 1;
+  min-width: 0;
+  color: var(--gray-700, #374151);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turns-context-meta {
+  flex-shrink: 0;
+  color: var(--gray-400, #9ca3af);
 }
