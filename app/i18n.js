@@ -86,8 +86,10 @@ export const i18n = {
     errorLoading: 'Error loading data',
     localOnlyNote: 'All data stays on this machine',
     viewOnGithub: 'View on GitHub',
-    linkCopied: 'Could not open your browser. The link has been copied to the clipboard.',
-    linkOpenFailed: 'Could not open your browser. Visit this address manually:'
+    projectHomeTitle: 'Project home',
+    projectHomeBody: 'Source code, releases and issues for this app live on GitHub.',
+    linkCopied: 'The link is on your clipboard — paste it into a browser.',
+    linkCopyFailed: 'Copy the address above and open it in a browser.'
   },
   zh: {
     title: 'Claude Code Token Lens',
@@ -176,7 +178,9 @@ export const i18n = {
     errorLoading: '数据加载失败',
     localOnlyNote: '所有数据只留在本机',
     viewOnGithub: '在 GitHub 上查看',
-    linkCopied: '没能唤起浏览器，链接已复制到剪贴板。',
-    linkOpenFailed: '没能唤起浏览器，请手动访问：'
+    projectHomeTitle: '项目主页',
+    projectHomeBody: '这个应用的源代码、版本发布和问题反馈都在 GitHub 上。',
+    linkCopied: '链接已复制到剪贴板，粘贴到浏览器即可打开。',
+    linkCopyFailed: '请手动复制上面的地址，在浏览器中打开。'
   }
 };

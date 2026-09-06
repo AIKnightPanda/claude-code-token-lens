@@ -164,19 +164,43 @@ const ExpandablePrompt = ({ prompt, t }) => {
 
   const toggle = (
     <button type="button" className="prompt-toggle" onClick={() => setExpanded((v) => !v)}>
-      {expanded ? t.showLess : '… ' + t.readMore}
+      {expanded ? t.showLess : t.readMore}
     </button>
   );
 
   return (
     <div ref={bodyRef} className={'prompt-body ' + (expanded ? 'is-expanded' : 'is-collapsed')}>
-      {/* 折叠时按钮要排在正文前面，float 才能让第三行的文字绕开它。 */}
-      {!expanded && overflowing && toggle}
+      {/* 折叠时这块要排在正文前面，float 才能让第三行的文字绕开它。
+          省略号跟着正文走，它表示「这里截断了」，不是按钮的一部分。 */}
+      {!expanded && overflowing && (
+        <span className="prompt-more">
+          <span className="prompt-ellipsis">…</span> {toggle}
+        </span>
+      )}
       {prompt}
       {expanded && toggle}
     </div>
   );
 };
+
+/**
+ * 唤不起系统浏览器时的兜底说明框。
+ *
+ * 桌面端没有地址栏，一个打不开的链接对用户来说就是死路；把地址摆出来、
+ * 顺手放进剪贴板，他自己还能打开。
+ */
+const ProjectLinkDialog = ({ copied, t, onClose }) => (
+  <div className="link-dialog-backdrop" onClick={onClose}>
+    <div className="link-dialog" role="dialog" aria-modal="true"
+      aria-label={t.projectHomeTitle} onClick={(e) => e.stopPropagation()}>
+      <h3 className="link-dialog-title"><GithubIcon size={18} />{t.projectHomeTitle}</h3>
+      <p className="link-dialog-body">{t.projectHomeBody}</p>
+      <code className="link-dialog-url">{PROJECT_URL}</code>
+      <p className="link-dialog-hint">{copied ? t.linkCopied : t.linkCopyFailed}</p>
+      <button type="button" className="link-dialog-close" onClick={onClose}>{t.dismiss}</button>
+    </div>
+  </div>
+);
 
 /**
  * 语言偏好存在 localStorage 里，属于 React 之外的状态源，
@@ -276,8 +300,8 @@ export default function Dashboard() {
   const dismissCostNote = () => setCostNoteVisible(false);
   const showCostNote = () => setCostNoteVisible(true);
 
-  // 打开外链失败时给的提示。静默失败最难查——用户只会看到「点了没反应」。
-  const [linkNotice, setLinkNotice] = useState('');
+  // 唤不起浏览器时弹的说明框。null 表示不显示，copied 记录地址有没有进剪贴板。
+  const [linkDialog, setLinkDialog] = useState(null);
 
   /** 桌面端的 WebView 会拦掉 window.open，外链只能交给系统浏览器。 */
   const openProjectPage = useCallback(async () => {
@@ -289,19 +313,15 @@ export default function Dashboard() {
       if (typeof window !== 'undefined' && window.open(PROJECT_URL, '_blank', 'noopener')) return;
     }
     // 两条路都不通就把地址交到用户手上，别让这次点击无声无息地消失。
+    let copied = false;
     try {
       await navigator.clipboard.writeText(PROJECT_URL);
-      setLinkNotice(t.linkCopied);
+      copied = true;
     } catch {
-      setLinkNotice(t.linkOpenFailed + ' ' + PROJECT_URL);
+      copied = false;
     }
-  }, [t]);
-
-  useEffect(() => {
-    if (!linkNotice) return;
-    const timer = setTimeout(() => setLinkNotice(''), 6000);
-    return () => clearTimeout(timer);
-  }, [linkNotice]);
+    setLinkDialog({ copied });
+  }, []);
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -647,7 +667,9 @@ export default function Dashboard() {
           {t.viewOnGithub}
           <ExternalLink size={13} />
         </button>
-        {linkNotice && <p className="link-notice">{linkNotice}</p>}
+        {linkDialog && (
+          <ProjectLinkDialog copied={linkDialog.copied} t={t} onClose={() => setLinkDialog(null)} />
+        )}
       </div>
     );
   }
@@ -981,7 +1003,14 @@ export default function Dashboard() {
     <div className="dashboard-container">
       <header className="dashboard-header">
         <div>
-          <h1 className="header-title"><TerminalSquare className="icon-primary" size={32} /> {t.title}</h1>
+          <h1 className="header-title">
+            <TerminalSquare className="icon-primary" size={32} /> {t.title}
+            {/* 项目主页贴着标题：它说的是「这个软件是什么」，不是一个操作。 */}
+            <button type="button" className="header-github" onClick={openProjectPage}
+              aria-label={t.viewOnGithub} title={t.viewOnGithub}>
+              <GithubIcon size={18} />
+            </button>
+          </h1>
           <p className="header-subtitle">
             {t.subtitle}
             {data.generatedAt && (
@@ -1090,20 +1119,16 @@ export default function Dashboard() {
         </p>
       )}
 
-      {/* 项目主页放页脚：它是「关于这个软件」，不属于顶部那排操作按钮。 */}
       <footer className="app-footer">
         <span className="app-footer-meta">
           <span className="app-footer-name">{t.title}</span>
           {APP_VERSION && <span> v{APP_VERSION}</span>}
           <span> · {t.localOnlyNote}</span>
         </span>
-        <button type="button" className="app-footer-link" onClick={openProjectPage} title={PROJECT_URL}>
-          <GithubIcon size={15} />
-          {t.viewOnGithub}
-          <ExternalLink size={13} />
-        </button>
       </footer>
-      {linkNotice && <div className="link-notice link-notice-toast" role="status">{linkNotice}</div>}
+      {linkDialog && (
+        <ProjectLinkDialog copied={linkDialog.copied} t={t} onClose={() => setLinkDialog(null)} />
+      )}
     </div>
   );
 }
