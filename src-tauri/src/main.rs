@@ -250,6 +250,9 @@ fn cache_clear_turns(app: AppHandle) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        // 页脚的项目主页要交给系统浏览器打开：WebView 自己拦截 window.open，
+        // 不注册这个插件的话前端 invoke 会直接被拒，点了没有任何反应。
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             list_log_files,
             read_log_chunk,

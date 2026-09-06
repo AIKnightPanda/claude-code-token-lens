@@ -144,11 +144,21 @@ export async function readTurnsShard(sessionId) {
  */
 export async function getTurnsForConversation(conversationId) {
   if (!conversationId) return [];
-  const sessionId = String(conversationId).split(':')[0];
   const { cache } = await readCache();
-  if (!cache.sessions[sessionId]) return [];
-  const turns = await readTurnsShard(sessionId);
-  return turns.filter((t) => t.conversationId === conversationId);
+  const conv = cache.conversations[conversationId];
+  // 被 resume 打断的提问，两半 turn 分别落在两个会话的分片里（见
+  // mergeReplayedConversations），只读 id 自带的那个分片会少掉一半明细。
+  const shards = (conv && conv.shards) || [String(conversationId).split(':')[0]];
+
+  const out = [];
+  for (const sessionId of shards) {
+    if (!cache.sessions[sessionId]) continue;
+    for (const t of await readTurnsShard(sessionId)) {
+      if (t.conversationId === conversationId) out.push(t);
+    }
+  }
+  out.sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
+  return out;
 }
 
 async function writeTurnsShard(sessionId, turns) {
@@ -672,6 +682,73 @@ function accumulate(target, turn) {
 }
 
 /**
+ * 把 resume/fork 复制出来的重复对话合并回一条。
+ *
+ * Claude Code 在 resume 时会把历史条目连 uuid 一起原样写进新的 session 文件，
+ * 而 conversation 的 id 是「会话 + uuid」，于是同一次提问在每个继承过它的会话里
+ * 都留下一条记录。turn 已经全局去重，总额不受影响，但列表里会并排出现几行
+ * 一模一样的内容；被 resume 打断的那次提问更糟——它的开销被切成两半，
+ * 分别挂在两条记录上，看起来像是同一句话问了两次、各花了一笔钱。
+ *
+ * 按 uuid 合成一条，归给 turn 实际落在的那个会话——不能只看谁开始得早：
+ * turn 的去重归属由解析顺序决定，和会话起始时间未必一致，归错了会话列表里
+ * 就会出现「总额里有这笔钱、点进去却没有对应的对话」。压缩记录一条 turn
+ * 都没有，这时才退回最早开始的那个会话。
+ *
+ * 返回「原 id -> 保留 id」的映射，调用方据此把 turn 就地改写并归集。
+ */
+function mergeReplayedConversations(cache, shardTurns) {
+  const groups = new Map();
+  for (const cid of Object.keys(cache.conversations)) {
+    const uuid = cid.slice(cid.indexOf(':') + 1);
+    // 缺 uuid 时退回的 `seqN` 只在单个会话内唯一，跨会话同名是巧合而非同一条。
+    if (!uuid || uuid.startsWith('seq')) continue;
+    const list = groups.get(uuid);
+    if (list) list.push(cid);
+    else groups.set(uuid, [cid]);
+  }
+
+  // 每条记录名下实际有多少 turn。
+  const weight = new Map();
+  for (const kept of shardTurns.values()) {
+    for (const t of kept) weight.set(t.conversationId, (weight.get(t.conversationId) || 0) + 1);
+  }
+
+  const canonical = new Map();
+  for (const cids of groups.values()) {
+    if (cids.length < 2) continue;
+    const startedAt = (cid) => {
+      const session = cache.sessions[cache.conversations[cid].sessionId];
+      return (session && session.firstActivity) || '\uffff';
+    };
+    // 排序键全部相同时用 id 兜底，保证每次刷新留下的都是同一条，
+    // 否则下钻链接会在两次刷新之间失效。
+    cids.sort((a, b) => {
+      const wa = weight.get(a) || 0;
+      const wb = weight.get(b) || 0;
+      if (wa !== wb) return wb - wa;
+      const sa = startedAt(a);
+      const sb = startedAt(b);
+      if (sa !== sb) return sa < sb ? -1 : 1;
+      return a < b ? -1 : 1;
+    });
+
+    const keep = cids[0];
+    const target = cache.conversations[keep];
+    for (const cid of cids) {
+      canonical.set(cid, keep);
+      if (cid === keep) continue;
+      const conv = cache.conversations[cid];
+      if (conv.date && conv.date < target.date) target.date = conv.date;
+      // 压缩规模只写在记录到 compact_boundary 的那一份上，别让它跟着副本一起删掉。
+      if (!target.compaction && conv.compaction) target.compaction = conv.compaction;
+      delete cache.conversations[cid];
+    }
+  }
+  return canonical;
+}
+
+/**
  * 把 session / conversation 的所有数字**从 turn 分片重新派生**，而不是在解析
  * 过程中手工累加。
  *
@@ -680,16 +757,36 @@ function accumulate(target, turn) {
  * 于是同一屏能出现三个互相矛盾的总额。
  */
 async function deriveTotalsFromTurns(cache, superseded) {
-  const convTotals = new Map();
-  const convModels = new Map();
-
+  // 分片先整体读进内存：合并归属得先知道 turn 落在哪儿，随后累计还要再走一遍。
+  // 实测 9000 条 turn，不值得为省这点内存把磁盘读两遍。
+  const shardTurns = new Map();
+  const shardDirty = new Set();
   for (const sessionId of Object.keys(cache.sessions)) {
     const turns = await readTurnsShard(sessionId);
     // 剔除同键冲突中落败的 turn（可能是在别的文件里被更完整的副本取代的）。
     const kept = superseded.size
       ? turns.filter((t) => !superseded.has(sessionId + '|' + t.id))
       : turns;
-    if (kept.length !== turns.length) await writeTurnsShard(sessionId, kept);
+    if (kept.length !== turns.length) shardDirty.add(sessionId);
+    shardTurns.set(sessionId, kept);
+  }
+
+  const canonical = mergeReplayedConversations(cache, shardTurns);
+  const convTotals = new Map();
+  const convModels = new Map();
+  const convShards = new Map();
+
+  for (const [sessionId, kept] of shardTurns) {
+    // 归到被合并掉的副本名下的 turn 就地改指到保留的那条，否则它们会变成
+    // 指向已删除记录的孤儿：金额算得对，下钻却是空的。
+    for (const t of kept) {
+      const canon = canonical.get(t.conversationId);
+      if (canon && canon !== t.conversationId) {
+        t.conversationId = canon;
+        shardDirty.add(sessionId);
+      }
+    }
+    if (shardDirty.has(sessionId)) await writeTurnsShard(sessionId, kept);
 
     const session = cache.sessions[sessionId];
     Object.assign(session, ZERO_TOTALS);
@@ -701,14 +798,18 @@ async function deriveTotalsFromTurns(cache, superseded) {
       models.add(t.model);
       if (t.pricingEstimated) session.estimatedPricing = true;
 
-      let ct = convTotals.get(t.conversationId);
+      const convId = t.conversationId;
+      let ct = convTotals.get(convId);
       if (!ct) {
         ct = Object.assign({}, ZERO_TOTALS);
-        convTotals.set(t.conversationId, ct);
-        convModels.set(t.conversationId, new Set());
+        convTotals.set(convId, ct);
+        convModels.set(convId, new Set());
+        convShards.set(convId, new Set());
       }
       accumulate(ct, t);
-      convModels.get(t.conversationId).add(t.model);
+      convModels.get(convId).add(t.model);
+      // 合并后一条对话的 turn 可能横跨两个会话的分片，记下都在哪儿，下钻才找得全。
+      convShards.get(convId).add(sessionId);
     }
     session.models = Array.from(models);
     // 全部内容都继承自别的会话（resume/fork 重放）时保留该行并标注，
@@ -732,6 +833,13 @@ async function deriveTotalsFromTurns(cache, superseded) {
     }
     Object.assign(conv, totals || Object.assign({}, ZERO_TOTALS));
     conv.models = Array.from(convModels.get(cid) || []);
+    const shards = convShards.get(cid);
+    // 只有跨分片时才记，绝大多数对话的 turn 就在 id 自带的那个会话里。
+    if (shards && (shards.size > 1 || !shards.has(conv.sessionId))) {
+      conv.shards = Array.from(shards).sort();
+    } else {
+      delete conv.shards;
+    }
     const session = cache.sessions[conv.sessionId];
     conv.projectKey = session ? session.projectKey : null;
     conv.projectName = session ? session.projectName : null;

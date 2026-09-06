@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   LineChart, Line
@@ -28,14 +28,6 @@ function GithubIcon({ size = 15 }) {
       <path d="M9 18c-4.51 2-5-2-7-2"/>
     </svg>
   );
-}
-
-/** 桌面端的 WebView 里 window.open 打不开外链，必须交给系统浏览器。 */
-function openProjectPage() {
-  openUrl(PROJECT_URL).catch(() => {
-    // 浏览器里跑 next dev 时没有 Tauri，退回普通新开标签页。
-    if (typeof window !== 'undefined') window.open(PROJECT_URL, '_blank', 'noopener');
-  });
 }
 
 function toPayload(cache) {
@@ -146,34 +138,42 @@ const StatCard = ({ icon, tone, title, value, compact }) => {
   );
 };
 
+/**
+ * 三行折叠的提示词。「展开」浮在第三行右端而不是另起一行 ——
+ * 列表里每条都省一行，一屏能多看好几条。
+ */
 const ExpandablePrompt = ({ prompt, t }) => {
   const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const bodyRef = useRef(null);
+
+  // 是否真的超过三行只能量出来：按字数估算在中英混排、窄列宽下必然失准，
+  // 短提示也会挂个点不动的「展开」。
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || expanded) return;
+    const measure = () => setOverflowing(el.scrollHeight - el.clientHeight > 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [prompt, expanded]);
+
   if (!prompt) return null;
-  const isLong = prompt.length > 80;
+
+  const toggle = (
+    <button type="button" className="prompt-toggle" onClick={() => setExpanded((v) => !v)}>
+      {expanded ? t.showLess : '… ' + t.readMore}
+    </button>
+  );
 
   return (
-    <div style={{ fontSize: '0.85rem', color: 'var(--gray-700)' }}>
-      <div style={{
-        whiteSpace: expanded ? 'pre-wrap' : 'normal',
-        wordBreak: 'break-word',
-        display: expanded ? 'block' : '-webkit-box',
-        WebkitLineClamp: expanded ? 'unset' : 3,
-        WebkitBoxOrient: 'vertical',
-        overflow: 'hidden'
-      }}>
-        {prompt}
-      </div>
-      {isLong && (
-        <button
-          onClick={() => setExpanded(!expanded)}
-          style={{
-            background: 'none', border: 'none', color: 'var(--indigo-600)',
-            fontSize: '0.75rem', cursor: 'pointer', padding: '4px 0', marginTop: '4px',
-            textDecoration: 'underline'
-          }}>
-          {expanded ? t.showLess : t.readMore}
-        </button>
-      )}
+    <div ref={bodyRef} className={'prompt-body ' + (expanded ? 'is-expanded' : 'is-collapsed')}>
+      {/* 折叠时按钮要排在正文前面，float 才能让第三行的文字绕开它。 */}
+      {!expanded && overflowing && toggle}
+      {prompt}
+      {expanded && toggle}
     </div>
   );
 };
@@ -275,6 +275,33 @@ export default function Dashboard() {
   );
   const dismissCostNote = () => setCostNoteVisible(false);
   const showCostNote = () => setCostNoteVisible(true);
+
+  // 打开外链失败时给的提示。静默失败最难查——用户只会看到「点了没反应」。
+  const [linkNotice, setLinkNotice] = useState('');
+
+  /** 桌面端的 WebView 会拦掉 window.open，外链只能交给系统浏览器。 */
+  const openProjectPage = useCallback(async () => {
+    try {
+      await openUrl(PROJECT_URL);
+      return;
+    } catch {
+      // 浏览器里跑 next dev 时没有 Tauri，退回普通新开标签页。
+      if (typeof window !== 'undefined' && window.open(PROJECT_URL, '_blank', 'noopener')) return;
+    }
+    // 两条路都不通就把地址交到用户手上，别让这次点击无声无息地消失。
+    try {
+      await navigator.clipboard.writeText(PROJECT_URL);
+      setLinkNotice(t.linkCopied);
+    } catch {
+      setLinkNotice(t.linkOpenFailed + ' ' + PROJECT_URL);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    if (!linkNotice) return;
+    const timer = setTimeout(() => setLinkNotice(''), 6000);
+    return () => clearTimeout(timer);
+  }, [linkNotice]);
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -505,7 +532,13 @@ export default function Dashboard() {
   const filteredConversations = useMemo(() => {
     let rows = data?.conversations || [];
     if (selectedProject) rows = rows.filter((c) => c.projectKey === selectedProject);
-    if (selectedSession) rows = rows.filter((c) => c.sessionId === selectedSession);
+    // 一次提问可能被 resume 打断、跨两个会话完成（parser 会把它合成一条，
+    // 归给 turn 更多的那边）。按 shards 一起匹配，另一边点进来才不会是空的。
+    if (selectedSession) {
+      rows = rows.filter(
+        (c) => c.sessionId === selectedSession || (c.shards && c.shards.includes(selectedSession))
+      );
+    }
     if (selectedDate) rows = rows.filter((c) => localDay(c.date) === selectedDate);
     else if (rangeFloor) rows = rows.filter((c) => (localDay(c.date) || '') >= rangeFloor);
     return sortRows(rows);
@@ -614,6 +647,7 @@ export default function Dashboard() {
           {t.viewOnGithub}
           <ExternalLink size={13} />
         </button>
+        {linkNotice && <p className="link-notice">{linkNotice}</p>}
       </div>
     );
   }
@@ -1069,6 +1103,7 @@ export default function Dashboard() {
           <ExternalLink size={13} />
         </button>
       </footer>
+      {linkNotice && <div className="link-notice link-notice-toast" role="status">{linkNotice}</div>}
     </div>
   );
 }

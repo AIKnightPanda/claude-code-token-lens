@@ -998,3 +998,77 @@ select.refresh-btn {
   outline: 2px solid var(--indigo-600, #6366f1);
   outline-offset: 2px;
 }
+
+/* 外链没能唤起浏览器时的兜底提示。停留几秒后自动消失。 */
+.link-notice {
+  margin: 10px 0 0;
+  font-size: 0.75rem;
+  color: var(--gray-500, #6b7280);
+  word-break: break-all;
+}
+
+.link-notice-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  max-width: 340px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--gray-200, #e5e7eb);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+}
+
+/*
+ * 折叠状态下的提示词：按钮浮在第三行右端，靠 float 让正文自然绕开，
+ * 而不是压在文字上。DOM 里按钮必须排在正文之前，float 才能参与绕排。
+ */
+.prompt-body {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--gray-700, #374151);
+  word-break: break-word;
+}
+
+.prompt-body.is-collapsed {
+  /* 3 行 × 0.85rem × 1.5 */
+  max-height: 3.825rem;
+  overflow: hidden;
+}
+
+.prompt-body.is-expanded {
+  white-space: pre-wrap;
+}
+
+.prompt-toggle {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--indigo-600, #6366f1);
+  font-size: 0.75rem;
+  font-family: inherit;
+  line-height: 1.275rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.is-collapsed .prompt-toggle {
+  float: right;
+  clear: both;
+  /* 前两行的高度，把按钮推到第三行 */
+  margin-top: 2.55rem;
+  margin-left: 0.5em;
+}
+
+.is-expanded .prompt-toggle {
+  display: block;
+  margin-top: 4px;
+}
+
+.prompt-toggle:focus-visible {
+  outline: 2px solid var(--indigo-600, #6366f1);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
