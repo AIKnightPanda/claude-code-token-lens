@@ -47,41 +47,88 @@ jobs:
 
       - run: npm ci
 
+      # 公证用的 App Store Connect 私钥只能以文件形式交给 notarytool，
+      # 所以先把 secret 落到 runner 的临时目录里。没配这个 secret 就整步跳过。
+      - name: 准备公证密钥 (macOS)
+        if: runner.os == 'macOS'
+        env:
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -z "$API_KEY_P8" ]; then
+            echo "未配置 APPLE_API_KEY_P8，本次不公证。"
+            exit 0
+          fi
+          printf '%s' "$API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      # 只构建，不在这一步建 Release：dmg 还要再走一遍公证，公证完才是最终产物。
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS 签名 + 公证。这些 secret 没配时会自动跳过，构建仍然成功，
+          # macOS 签名 + 公证。secret 没配时会自动跳过，构建仍然成功，
           # 只是产出的包未签名（用户首次打开要右键→打开）。
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           KEYCHAIN_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # 公证凭据：App Store Connect API 密钥（APPLE_API_KEY_PATH 由上一步写入）
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         with:
-          # 只有标签触发时才建 Release；手动触发时留空，仅上传构建产物。
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: Claude Code Token Lens __VERSION__
-          releaseDraft: true
-          prerelease: false
           args: ${{ matrix.args }}
-          releaseBody: |
-            ### 下载
 
-            - **macOS**：`.dmg`（universal，Apple Silicon 与 Intel 通用）
-            - **Windows**：`.exe`（NSIS 安装包）或 `.msi`
+      # Tauri 只公证并装订 .app；用户下载的是 dmg，Gatekeeper 首先校验的也是 dmg，
+      # 少这一步双击 dmg 照样弹「无法验证开发者」。
+      - name: 公证 DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if [ -z "${APPLE_API_KEY_PATH:-}" ]; then
+            echo "没有公证密钥，跳过。"
+            exit 0
+          fi
+          shopt -s nullglob
+          for dmg in src-tauri/target/*/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/dmg/*.dmg; do
+            echo "公证 $dmg"
+            xcrun notarytool submit "$dmg" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "${{ secrets.APPLE_API_KEY }}" \
+              --issuer "${{ secrets.APPLE_API_ISSUER }}" --wait
+            xcrun stapler staple "$dmg"
+          done
 
-            ### 首次打开
+      # 标签触发才发版。两个平台的 job 并行跑，谁先到谁建 Release，另一个直接往上挂。
+      - name: 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes=$(cat <<'NOTES'
+          ### 下载
 
-            macOS 版已用 Developer ID 证书签名并经 Apple 公证，双击即可打开。
-            Windows 版未签名，SmartScreen 弹窗里点「更多信息」→「仍要运行」即可。
+          - **macOS**：`.dmg`（universal，Apple 芯片与 Intel 通用），已签名并经 Apple 公证，双击即可打开
+          - **Windows**：`.exe`（安装包）或 `.msi`；未签名，SmartScreen 弹窗里点「更多信息」→「仍要运行」
 
-            ### 说明
+          ### 说明
 
-            应用只读取本机 `~/.claude/projects/` 下的日志，不联网、不上传任何数据。
+          应用只读取本机 `~/.claude/projects/` 下的日志，不联网、不上传任何数据。
+          NOTES
+          )
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --draft --title "Claude Code Token Lens $TAG" --notes "$notes" \
+            || true
+          shopt -s nullglob globstar
+          files=(src-tauri/target/**/release/bundle/**/*.dmg
+                 src-tauri/target/**/release/bundle/**/*.exe
+                 src-tauri/target/**/release/bundle/**/*.msi)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "没有找到安装包" >&2
+            exit 1
+          fi
+          printf '上传 %s\n' "${files[@]}"
+          gh release upload "$TAG" "${files[@]}" --clobber
 
-      # 无论是否建 Release，都把安装包留一份，方便手动触发时下载验证。
       - uses: actions/upload-artifact@v4
         with:
           name: bundle-${{ runner.os }}
