@@ -1099,8 +1099,8 @@ select.refresh-btn {
 }
 
 /*
- * 折叠状态下的提示词：省略号和「展开」浮在第三行右端，靠 float 让正文
- * 自然绕开，而不是压在文字上。DOM 里它必须排在正文之前，float 才能参与绕排。
+ * 折叠状态下的提示词：正文按字符截断到三行（见 ExpandablePrompt），
+ * 「… 展开」直接跟在末尾，不需要 float 绕排。
  */
 .prompt-body {
   font-size: 0.85rem;
@@ -1110,7 +1110,7 @@ select.refresh-btn {
 }
 
 .prompt-body.is-collapsed {
-  /* 3 行 × 0.85rem × 1.5 */
+  /* 3 行 × 0.85rem × 1.5。测量算出来的截断位置正好填满这个高度。 */
   max-height: 3.825rem;
   overflow: hidden;
 }
@@ -1119,13 +1119,8 @@ select.refresh-btn {
   white-space: pre-wrap;
 }
 
+/* 省略号和按钮之间不能断行，否则「展开」会被甩到下一行裁掉。 */
 .prompt-more {
-  float: right;
-  clear: both;
-  /* 前两行的高度，把它推到第三行 */
-  margin-top: 2.55rem;
-  margin-left: 0.25em;
-  line-height: 1.275rem;
   white-space: nowrap;
 }
 

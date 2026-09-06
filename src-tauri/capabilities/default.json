@@ -5,6 +5,10 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:allow-open-url"
+    {
+      "identifier": "opener:allow-open-url",
+      "comment": "open_url 会按 scope 校验目标地址，白名单为空时一律拒绝。这里只放行项目主页一个地址，别的什么都打不开。",
+      "allow": [{ "url": "https://github.com/AIKnightPanda/claude-code-token-lens" }]
+    }
   ]
 }

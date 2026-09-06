@@ -138,30 +138,70 @@ const StatCard = ({ icon, tone, title, value, compact }) => {
   );
 };
 
+/** 折叠时最多显示几行。 */
+const PROMPT_LINES = 3;
+
 /**
- * 三行折叠的提示词。「展开」浮在第三行右端而不是另起一行 ——
- * 列表里每条都省一行，一屏能多看好几条。
+ * 三行折叠的提示词，「展开」紧跟在被截断的正文后面。
+ *
+ * 用 float 让正文绕开按钮做不到这个效果：绕排是按整词换行的，最后一个放不下的
+ * 词会被推到下一行（然后被裁掉），于是文字和按钮之间总留着一段空白。要让省略号
+ * 正好贴住最后一个字，只能量出该在第几个字符处截断——二分一次是 log2(n) 步，
+ * 一条几百字的提示词也就八九次测量。
  */
 const ExpandablePrompt = ({ prompt, t }) => {
   const [expanded, setExpanded] = useState(false);
-  const [overflowing, setOverflowing] = useState(false);
+  // 截断位置；-1 表示放得下，整段直接显示。
+  const [clipAt, setClipAt] = useState(-1);
   const bodyRef = useRef(null);
+  const textRef = useRef(null);
+  const moreRef = useRef(null);
 
-  // 是否真的超过三行只能量出来：按字数估算在中英混排、窄列宽下必然失准，
-  // 短提示也会挂个点不动的「展开」。
   useLayoutEffect(() => {
-    const el = bodyRef.current;
-    if (!el || expanded) return;
-    const measure = () => setOverflowing(el.scrollHeight - el.clientHeight > 1);
+    if (expanded) return;
+    const body = bodyRef.current;
+    const text = textRef.current;
+    if (!body || !text) return;
+
+    const measure = () => {
+      const lineHeight = parseFloat(getComputedStyle(body).lineHeight);
+      if (!lineHeight) return;
+      // max-height 只管裁剪，scrollHeight 反映的仍是内容的真实高度。
+      const limit = lineHeight * PROMPT_LINES + 1;
+
+      // 先按全文量一次：放得下就不用截，也不用显示按钮。
+      text.textContent = prompt;
+      if (moreRef.current) moreRef.current.hidden = true;
+      if (body.scrollHeight <= limit) {
+        setClipAt(-1);
+        return;
+      }
+
+      // 「… 展开」要占掉第三行末尾的宽度，量的时候必须让它参与排版。
+      if (moreRef.current) moreRef.current.hidden = false;
+      let lo = 0;
+      let hi = prompt.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        text.textContent = prompt.slice(0, mid);
+        if (body.scrollHeight <= limit) lo = mid;
+        else hi = mid - 1;
+      }
+      setClipAt(lo);
+    };
+
     measure();
+    // 列宽变了截断位置就得重算。容器高度被 max-height 钉死，
+    // 改写内容不会反过来触发这个观察器，不存在自激。
     if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(measure);
-    ro.observe(el);
+    ro.observe(body);
     return () => ro.disconnect();
   }, [prompt, expanded]);
 
   if (!prompt) return null;
 
+  const clipped = !expanded && clipAt >= 0;
   const toggle = (
     <button type="button" className="prompt-toggle" onClick={() => setExpanded((v) => !v)}>
       {expanded ? t.showLess : t.readMore}
@@ -170,14 +210,16 @@ const ExpandablePrompt = ({ prompt, t }) => {
 
   return (
     <div ref={bodyRef} className={'prompt-body ' + (expanded ? 'is-expanded' : 'is-collapsed')}>
-      {/* 折叠时这块要排在正文前面，float 才能让第三行的文字绕开它。
-          省略号跟着正文走，它表示「这里截断了」，不是按钮的一部分。 */}
-      {!expanded && overflowing && (
-        <span className="prompt-more">
+      {/* 测量期间这个 span 的内容会被直接改写，随后的渲染再把它落到 state 上。 */}
+      <span ref={textRef}>{clipped ? prompt.slice(0, clipAt) : prompt}</span>
+      {/* 始终留在 DOM 里，只是放得下时隐藏：测量二分位置时要靠它占住第三行
+          末尾的宽度，等 clipAt 定下来才渲染就已经晚了。 */}
+      {!expanded && (
+        <span ref={moreRef} className="prompt-more" hidden={!clipped}>
+          {/* 省略号是正文被截断的记号，属于正文，不是按钮的一部分。 */}
           <span className="prompt-ellipsis">…</span> {toggle}
         </span>
       )}
-      {prompt}
       {expanded && toggle}
     </div>
   );
