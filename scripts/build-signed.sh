@@ -86,6 +86,16 @@ npm run tauri:build
 APP="src-tauri/target/release/bundle/macos/Claude Code Token Lens.app"
 DMG="$(ls -t src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1 || true)"
 
+# Tauri 只公证 .app。但用户下载到的是 dmg，Gatekeeper 首先校验的也是 dmg，
+# 所以 dmg 得单独再走一遍公证 —— 否则双击 dmg 仍会弹「无法验证开发者」。
+if [ "${SKIP_NOTARIZE:-0}" != "1" ] && [ -n "$DMG" ]; then
+  echo
+  echo "==> 公证 DMG 本身"
+  xcrun notarytool submit "$DMG" \
+    --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+  xcrun stapler staple "$DMG"
+fi
+
 echo
 echo "==> 校验签名"
 codesign --verify --deep --strict --verbose=2 "$APP"

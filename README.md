@@ -71,60 +71,6 @@ To check the numbers yourself (runs in Node against the same parser the app uses
 npm run verify
 ```
 
-### Code signing & notarization (macOS)
-
-For the app to open with a double-click on someone else's Mac it needs two things: a **signature**
-(who built it) and **notarization** (Apple scans the build and issues a ticket that gets stapled
-into it). A signed-but-not-notarized build is still blocked by Gatekeeper on download.
-
-Notarization needs **no extra certificate** — it uses the same Developer ID Application certificate
-plus an app-specific password for your Apple ID.
-
-**One-time setup: create an app-specific password**
-
-1. Open <https://appleid.apple.com> and sign in with your developer Apple ID;
-2. Go to *Sign-In and Security* → *App-Specific Passwords* → *Generate password*;
-3. Name it anything (e.g. `token-lens-notary`). You get a password shaped like
-   `abcd-efgh-ijkl-mnop` — **it is shown only once**, so copy it;
-4. Back in the terminal:
-
-   ```bash
-   bash scripts/build-signed.sh --save-password
-   ```
-
-   Enter your Apple ID and that password. It goes into your login keychain and is never asked for
-   again. It never touches your shell history or any file in the repo.
-
-**Every build after that**
-
-```bash
-bash scripts/build-signed.sh
-```
-
-Sign → submit to Apple for notarization (usually 1–5 minutes) → staple the ticket into the `.app`
-and `.dmg` → verify. When the final `spctl` line prints `accepted`, you are done. Pass
-`SKIP_NOTARIZE=1` to sign only.
-
-**In GitHub Actions**: add these repository secrets (Settings → Secrets and variables → Actions)
-and the workflow signs and notarizes automatically. With none of them set the build still succeeds,
-it just produces unsigned bundles.
-
-| Secret | Value |
-|---|---|
-| `APPLE_CERTIFICATE` | Your `.p12` export, base64-encoded (`base64 -i cert.p12 \| pbcopy`) |
-| `APPLE_CERTIFICATE_PASSWORD` | The password you set when exporting the `.p12` |
-| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Your Name (TEAMID)` |
-| `APPLE_ID` | Your Apple ID email |
-| `APPLE_PASSWORD` | The app-specific password from above |
-| `APPLE_TEAM_ID` | Your team ID |
-
-Removing the Windows SmartScreen prompt needs a separate code-signing certificate; not configured yet.
-
-### Releasing
-
-`.github/workflows/release.yml` builds both platforms on GitHub's runners — push a `v*` tag
-(e.g. `git tag v1.0.0 && git push origin v1.0.0`) and it attaches the macOS universal `.dmg`
-and the Windows `.exe`/`.msi` to a draft release. You never have to build locally.
 
 ## ⚙️ Configuration
 
