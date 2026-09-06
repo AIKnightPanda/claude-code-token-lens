@@ -16,8 +16,12 @@ cd "$(dirname "$0")/.."
 
 NOTARY_ENV="${NOTARY_ENV:-$HOME/.config/apple-notary.env}"
 
-: "${APPLE_SIGNING_IDENTITY:=Developer ID Application: Wei Xiong (C95F3RNX59)}"
-: "${APPLE_TEAM_ID:=C95F3RNX59}"
+# 本机配置（.p8 路径、Key ID、Issuer ID，可选的签名身份）都在仓库外，
+# 免得把个人信息写进公开代码。
+if [ -f "$NOTARY_ENV" ]; then
+  # shellcheck disable=SC1090
+  set -a; . "$NOTARY_ENV"; set +a
+fi
 
 setup() {
   local p8 keyid issuer
@@ -48,12 +52,19 @@ case "${1:-}" in
   *) echo "未知参数：$1（用 --help 看用法）" >&2; exit 2 ;;
 esac
 
-if ! security find-identity -v -p codesigning | grep -qF "$APPLE_SIGNING_IDENTITY"; then
-  echo "钥匙串里找不到签名证书：$APPLE_SIGNING_IDENTITY" >&2
-  echo "当前可用身份：" >&2
+# 签名身份：没显式指定就从钥匙串里找那张 Developer ID Application 证书。
+if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  APPLE_SIGNING_IDENTITY="$(security find-identity -v -p codesigning \
+    | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+fi
+if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  echo "钥匙串里没有 Developer ID Application 证书。当前可用身份：" >&2
   security find-identity -v -p codesigning >&2
   exit 1
 fi
+# Team ID 就是身份字符串括号里那段。
+: "${APPLE_TEAM_ID:=$(printf '%s' "$APPLE_SIGNING_IDENTITY" | sed -n 's/.*(\([A-Z0-9]*\))$/\1/p')}"
+echo "==> 签名身份：$APPLE_SIGNING_IDENTITY"
 export APPLE_SIGNING_IDENTITY APPLE_TEAM_ID
 
 # 公证凭据。notarytool 支持两套，二选一即可；这里优先 API 密钥。
@@ -61,10 +72,6 @@ NOTARY_ARGS=()
 if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
   echo "==> 只签名，跳过公证"
 else
-  if [ -z "${APPLE_API_KEY_PATH:-}" ] && [ -f "$NOTARY_ENV" ]; then
-    # shellcheck disable=SC1090
-    set -a; . "$NOTARY_ENV"; set +a
-  fi
   if [ -n "${APPLE_API_KEY_PATH:-}" ] && [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ]; then
     [ -f "$APPLE_API_KEY_PATH" ] || { echo "找不到私钥文件：$APPLE_API_KEY_PATH" >&2; exit 1; }
     export APPLE_API_KEY_PATH APPLE_API_KEY APPLE_API_ISSUER

@@ -1,2 +1,6 @@
 /target/
 /gen/schemas/
+
+# tauri icon 会顺带生成移动端图标，本项目只做桌面端
+/icons/android/
+/icons/ios/
