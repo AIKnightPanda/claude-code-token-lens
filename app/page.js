@@ -8,10 +8,48 @@ import {
 import {
   Activity, DollarSign, Cpu, Calendar, AlertCircle, TerminalSquare, RefreshCw,
   FolderOpen, MessageSquare, BarChart3, ChevronRight, ChevronUp, ChevronDown,
-  ChevronsUpDown, AlignLeft, ArrowLeft, X, Globe, Info
+  ChevronsUpDown, AlignLeft, ArrowLeft, X, Globe, Info, ExternalLink
 } from 'lucide-react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { i18n } from './i18n';
 import VolumeVsCost from './VolumeVsCost';
+import { readCache, refreshUsage, getTurnsForConversation } from './lib/parser-tauri';
+
+const PROJECT_URL = 'https://github.com/AIKnightPanda/claude-code-token-lens';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '';
+
+/** lucide 从 v1 起不再收录品牌图标，GitHub 的图形只能自己带。 */
+function GithubIcon({ size = 15 }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24"
+      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/>
+      <path d="M9 18c-4.51 2-5-2-7-2"/>
+    </svg>
+  );
+}
+
+/** 桌面端的 WebView 里 window.open 打不开外链，必须交给系统浏览器。 */
+function openProjectPage() {
+  openUrl(PROJECT_URL).catch(() => {
+    // 浏览器里跑 next dev 时没有 Tauri，退回普通新开标签页。
+    if (typeof window !== 'undefined') window.open(PROJECT_URL, '_blank', 'noopener');
+  });
+}
+
+function toPayload(cache) {
+  if (!cache) return null;
+  return {
+    generatedAt: cache.generatedAt,
+    summary: cache.summary,
+    projects: cache.projects,
+    daily: cache.daily,
+    sessions: Object.values(cache.sessions),
+    conversations: Object.values(cache.conversations),
+    stats: cache.stats,
+  };
+}
 import './globals.css';
 
 const COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6'];
@@ -268,11 +306,18 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async (forceRefresh = false) => {
     try {
-      const res = await fetch(forceRefresh ? '/api/usage?refresh=true' : '/api/usage');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setData(json);
+      let cacheData;
+      if (forceRefresh) {
+        cacheData = await refreshUsage({ force: forceRefresh });
+      } else {
+        const { cache, rebuildReason } = await readCache();
+        if (rebuildReason) {
+          cacheData = await refreshUsage({ force: true });
+        } else {
+          cacheData = cache;
+        }
+      }
+      setData(toPayload(cacheData));
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -291,12 +336,14 @@ export default function Dashboard() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/usage');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
+        const { cache, rebuildReason } = await readCache();
         if (cancelled) return;
-        if (json.error) throw new Error(json.error);
-        setData(json);
+        if (rebuildReason) {
+          const freshData = await refreshUsage({ force: true });
+          if (!cancelled) setData(toPayload(freshData));
+        } else {
+          setData(toPayload(cache));
+        }
       } catch (err) {
         if (!cancelled) setError(err.message);
       } finally {
@@ -315,19 +362,18 @@ export default function Dashboard() {
 
   // turn 明细按需拉取：它占总数据量九成以上，且只在下钻时才需要。
   useEffect(() => {
-    if (!turnsKey) return undefined;
+    if (!turnsKey || !turnsTarget) return undefined;
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/usage/turns?${turnsKey}`);
-        const json = await res.json();
-        if (!cancelled) setTurnsCache({ key: turnsKey, rows: json.turns || [] });
+        const turns = await getTurnsForConversation(turnsTarget.id);
+        if (!cancelled) setTurnsCache({ key: turnsKey, rows: turns || [] });
       } catch {
         if (!cancelled) setTurnsCache({ key: turnsKey, rows: [] });
       }
     })();
     return () => { cancelled = true; };
-  }, [turnsKey]);
+  }, [turnsKey, turnsTarget]);
 
   const turns = turnsCache.key === turnsKey ? turnsCache.rows : null;
   const turnsLoading = !!turnsKey && turns === null;
@@ -561,6 +607,13 @@ export default function Dashboard() {
           <AlertCircle size={24} />
           <div><h3>{t.errorLoading}</h3><p>{error}</p></div>
         </div>
+        {/* 出错时最想找的就是「去哪儿反馈」，这里也放一个入口。 */}
+        <button type="button" className="app-footer-link" style={{ marginTop: '18px' }}
+          onClick={openProjectPage} title={PROJECT_URL}>
+          <GithubIcon size={15} />
+          {t.viewOnGithub}
+          <ExternalLink size={13} />
+        </button>
       </div>
     );
   }
@@ -1002,6 +1055,20 @@ export default function Dashboard() {
           {' · '}{t.refreshedIn} {data.stats.durationMs}ms
         </p>
       )}
+
+      {/* 项目主页放页脚：它是「关于这个软件」，不属于顶部那排操作按钮。 */}
+      <footer className="app-footer">
+        <span className="app-footer-meta">
+          <span className="app-footer-name">{t.title}</span>
+          {APP_VERSION && <span> v{APP_VERSION}</span>}
+          <span> · {t.localOnlyNote}</span>
+        </span>
+        <button type="button" className="app-footer-link" onClick={openProjectPage} title={PROJECT_URL}>
+          <GithubIcon size={15} />
+          {t.viewOnGithub}
+          <ExternalLink size={13} />
+        </button>
+      </footer>
     </div>
   );
 }

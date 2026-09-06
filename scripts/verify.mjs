@@ -13,7 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
-import { refreshUsage, getProjectsDir, readTurnsShard, DEDUP_SCOPE } from '../app/lib/parser.js';
+import { refreshUsage, getProjectsDir, readTurnsShard, DEDUP_SCOPE } from '../app/lib/parser-node.js';
 import { extractTokens, calculateCost } from '../app/lib/pricing.js';
 
 const money = (n) => '$' + n.toFixed(2);

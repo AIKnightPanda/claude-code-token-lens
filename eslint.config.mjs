@@ -10,6 +10,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Rust 侧的构建产物里有 Tauri 生成的 JS，不该被当成源码检查。
+    "src-tauri/**",
   ]),
 ]);
 

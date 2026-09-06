@@ -1,9 +1,28 @@
-import fs from 'fs';
-import fsp from 'fs/promises';
-import path from 'path';
-import os from 'os';
-import readline from 'readline';
 import { extractTokens, calculateCostBreakdown, getPricing } from './pricing.js';
+
+/**
+ * 这个模块只负责解析与聚合，不碰任何具体的 I/O 实现。
+ *
+ * 真正的读写由外部注入的 io 适配器提供：
+ *   - Node（`npm run verify`）  -> ./io-node.js
+ *   - 桌面端（Tauri WebView）   -> ./io-tauri.js
+ * 两端共用同一份解析逻辑，避免两套代码算出两个数。
+ * 别直接 import 本模块，用 ./parser-node.js 或 ./parser-tauri.js。
+ */
+let io = null;
+
+export function setIO(impl) {
+  io = impl;
+}
+
+/** Tauri 的命令是以字符串 reject 的，没有 .message，统一在这里兜住。 */
+function errText(err) {
+  if (!err) return 'unknown error';
+  if (typeof err === 'string') return err;
+  return err.message || String(err);
+}
+
+const env = (typeof process !== 'undefined' && process.env) ? process.env : {};
 
 export const CACHE_VERSION = 3;
 
@@ -23,7 +42,7 @@ export const CACHE_VERSION = 3;
  *
  * 实测这两档在本机数据上相差约 20%。用 TOKEN_LENS_DEDUP_SCOPE=session 可切换。
  */
-export const DEDUP_SCOPE = process.env.TOKEN_LENS_DEDUP_SCOPE || 'global';
+export const DEDUP_SCOPE = env.TOKEN_LENS_DEDUP_SCOPE || 'global';
 
 /**
  * 是否把用户提示词的开头存进缓存。
@@ -32,7 +51,7 @@ export const DEDUP_SCOPE = process.env.TOKEN_LENS_DEDUP_SCOPE || 'global';
  * 提示词原文会以明文落到 data/usage_cache.json。设为 'false' 可只统计用量、
  * 不留存任何提示词内容。
  */
-export const STORE_PROMPTS = process.env.TOKEN_LENS_STORE_PROMPTS !== 'false';
+export const STORE_PROMPTS = env.TOKEN_LENS_STORE_PROMPTS !== 'false';
 
 /**
  * 每条提示词最多保留的字符数。
@@ -41,14 +60,11 @@ export const STORE_PROMPTS = process.env.TOKEN_LENS_STORE_PROMPTS !== 'false';
  * 相比 2000 字只多占约 0.03MB。保留上限是为了兜底——万一有人把整个文件粘进提问，
  * 不至于让缓存和接口响应被一条记录撑爆。
  */
-const PROMPT_MAX_CHARS = Number(process.env.TOKEN_LENS_PROMPT_MAX_CHARS) || 10000;
+const PROMPT_MAX_CHARS = Number(env.TOKEN_LENS_PROMPT_MAX_CHARS) || 10000;
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const CACHE_FILE = path.join(DATA_DIR, 'usage_cache.json');
-const TURNS_DIR = path.join(DATA_DIR, 'turns');
-
+/** 日志根目录。只有 Node 侧用得上（verify 脚本要自己扫一遍对账）。 */
 export function getProjectsDir() {
-  return process.env.CLAUDE_PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects');
+  return io.projectsDir();
 }
 
 /** 本地时区的 YYYY-MM-DD。日志里的 timestamp 是 UTC，直接切字符串会错位一天。 */
@@ -78,13 +94,16 @@ function emptyCache() {
   };
 }
 
-async function ensureDirs() {
-  await fsp.mkdir(TURNS_DIR, { recursive: true });
-}
-
 export async function readCache() {
+  let raw;
   try {
-    const raw = await fsp.readFile(CACHE_FILE, 'utf8');
+    raw = await io.readCache();
+  } catch (err) {
+    return { cache: emptyCache(), rebuildReason: 'unreadable-cache: ' + errText(err) };
+  }
+  // 首次启动没有缓存文件，这是正常路径，不是错误。
+  if (raw == null) return { cache: emptyCache(), rebuildReason: 'no-cache' };
+  try {
     const parsed = JSON.parse(raw);
     // 结构或去重口径变了就整体重建，避免新旧口径的数据混在一起产生对不上的总额。
     if (
@@ -96,43 +115,48 @@ export async function readCache() {
     }
     return { cache: Object.assign(emptyCache(), parsed), rebuildReason: null };
   } catch (err) {
-    if (err.code === 'ENOENT') return { cache: emptyCache(), rebuildReason: 'no-cache' };
     // 缓存损坏时重建，但把原因带出去，而不是静默清空。
-    return { cache: emptyCache(), rebuildReason: 'unreadable-cache: ' + err.message };
+    return { cache: emptyCache(), rebuildReason: 'unreadable-cache: ' + errText(err) };
   }
 }
 
 async function writeCache(cache) {
-  await ensureDirs();
-  const tmp = CACHE_FILE + '.tmp';
   // 不带缩进：缩进在这个体量下白占约 20% 体积，而且没人会去读它。
-  await fsp.writeFile(tmp, JSON.stringify(cache), 'utf8');
-  await fsp.rename(tmp, CACHE_FILE);
-}
-
-function turnsShardPath(sessionId) {
-  return path.join(TURNS_DIR, sessionId + '.json');
+  await io.writeCache(JSON.stringify(cache));
 }
 
 export async function readTurnsShard(sessionId) {
   try {
-    const raw = await fsp.readFile(turnsShardPath(sessionId), 'utf8');
+    const raw = await io.readTurns(sessionId);
+    if (raw == null) return [];
     return JSON.parse(raw);
   } catch {
     return [];
   }
 }
 
+/**
+ * 取一条对话的 turn 明细。
+ *
+ * turn 数据量随使用时长线性增长（实测 34 天已有 7600+ 条），所以不进主看板数据，
+ * 只在下钻时按需读。conversationId 形如 "<sessionId>:<uuid>"，能直接反解出所在
+ * 分片，不必扫描全部分片。
+ */
+export async function getTurnsForConversation(conversationId) {
+  if (!conversationId) return [];
+  const sessionId = String(conversationId).split(':')[0];
+  const { cache } = await readCache();
+  if (!cache.sessions[sessionId]) return [];
+  const turns = await readTurnsShard(sessionId);
+  return turns.filter((t) => t.conversationId === conversationId);
+}
+
 async function writeTurnsShard(sessionId, turns) {
-  await ensureDirs();
-  const p = turnsShardPath(sessionId);
   if (!turns.length) {
-    await fsp.rm(p, { force: true });
+    await io.removeTurns(sessionId);
     return;
   }
-  const tmp = p + '.tmp';
-  await fsp.writeFile(tmp, JSON.stringify(turns), 'utf8');
-  await fsp.rename(tmp, p);
+  await io.writeTurns(sessionId, JSON.stringify(turns));
 }
 
 /**
@@ -286,10 +310,7 @@ function newConversation(id, sessionId, timestamp, prompt, kind = 'prompt') {
  * readFileSync + split('\n') 会让 RSS 冲到约 1GB。
  */
 async function parseFileRange(filePath, startOffset, ctx) {
-  const stream = fs.createReadStream(filePath, { encoding: 'utf8', start: startOffset });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-
-  for await (const line of rl) {
+  for await (const line of io.readLines(filePath, startOffset)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
@@ -442,45 +463,6 @@ async function parseFileRange(filePath, startOffset, ctx) {
   }
 }
 
-/** 扫描日志目录，列出所有 session 文件及其 mtime / size。 */
-async function scanFiles(projectsDir) {
-  const out = [];
-  let projectFolders;
-  try {
-    projectFolders = await fsp.readdir(projectsDir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const folder of projectFolders) {
-    if (!folder.isDirectory() || folder.name.startsWith('.')) continue;
-    const projPath = path.join(projectsDir, folder.name);
-    let files;
-    try {
-      files = await fsp.readdir(projPath);
-    } catch {
-      continue;
-    }
-    for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const filePath = path.join(projPath, f);
-      try {
-        const st = await fsp.stat(filePath);
-        if (!st.isFile()) continue;
-        out.push({
-          filePath,
-          folderName: folder.name,
-          sessionId: f.slice(0, -6),
-          mtimeMs: st.mtimeMs,
-          size: st.size,
-        });
-      } catch {
-        /* 文件在扫描过程中消失，跳过 */
-      }
-    }
-  }
-  return out;
-}
-
 /**
  * 增量刷新。
  *
@@ -497,11 +479,15 @@ export async function refreshUsage({ force = false } = {}) {
     cache.fileRegistry = {};
     cache.sessions = {};
     cache.conversations = {};
-    await fsp.rm(TURNS_DIR, { recursive: true, force: true });
+    await io.clearAllTurns();
   }
 
-  const projectsDir = getProjectsDir();
-  const files = await scanFiles(projectsDir);
+  // 按路径排序，让解析顺序与目录遍历顺序无关。
+  // global 去重下「谁先出现谁记账」，顺序一变，被 resume 继承的历史就会挂到
+  // 另一个 session 名下 —— 总额不变，但每个 session 的数字会跟着抖。
+  const files = (await io.listLogFiles()).sort(
+    (a, b) => (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0)
+  );
   const stats = {
     filesScanned: files.length,
     filesParsed: 0,
@@ -528,7 +514,7 @@ export async function refreshUsage({ force = false } = {}) {
     for (const [cid, conv] of Object.entries(cache.conversations)) {
       if (conv.sessionId === sessionId) delete cache.conversations[cid];
     }
-    await fsp.rm(turnsShardPath(sessionId), { force: true });
+    await io.removeTurns(sessionId);
     stats.filesRemoved++;
   }
 
@@ -613,7 +599,7 @@ export async function refreshUsage({ force = false } = {}) {
     } catch (err) {
       stats.linesSkipped++;
       // 单个文件读失败不应该拖垮整次刷新，但要留痕。
-      stats.lastError = file.filePath + ': ' + err.message;
+      stats.lastError = file.filePath + ': ' + errText(err);
       continue;
     }
     stats.filesParsed++;
@@ -622,7 +608,7 @@ export async function refreshUsage({ force = false } = {}) {
     await writeTurnsShard(sessionId, ctx.turns);
 
     // 项目身份用 cwd 全路径，不用目录名：不同路径下的同名目录必须区分开。
-    const projectKey = ctx.cwd || path.join(projectsDir, file.folderName);
+    const projectKey = ctx.cwd || file.projectPath;
     cache.sessions[sessionId] = {
       sessionId,
       // customTitle/aiTitle 必须落盘：增量刷新只解析新追加的字节，

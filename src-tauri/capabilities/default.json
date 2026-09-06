@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口的权限：只用到内置的窗口/事件能力，加上用系统浏览器打开项目主页。文件读写走的是本应用自己的命令，不经过任何 fs 插件。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:allow-open-url"
+  ]
+}

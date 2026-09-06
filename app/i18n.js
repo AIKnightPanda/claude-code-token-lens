@@ -83,7 +83,9 @@ export const i18n = {
     parsedLines: 'lines parsed',
     duplicatesDropped: 'duplicates removed',
     refreshedIn: 'refreshed in',
-    errorLoading: 'Error loading data'
+    errorLoading: 'Error loading data',
+    localOnlyNote: 'All data stays on this machine',
+    viewOnGithub: 'View on GitHub'
   },
   zh: {
     title: 'Claude Code Token Lens',
@@ -169,6 +171,8 @@ export const i18n = {
     parsedLines: '行已解析',
     duplicatesDropped: '条重复已剔除',
     refreshedIn: '耗时',
-    errorLoading: '数据加载失败'
+    errorLoading: '数据加载失败',
+    localOnlyNote: '所有数据只留在本机',
+    viewOnGithub: '在 GitHub 上查看'
   }
 };

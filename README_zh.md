@@ -34,43 +34,101 @@
 
 ## 🚀 快速开始
 
-### 环境要求
+本项目以桌面应用形式分发（基于 [Tauri](https://tauri.app/) 打包），不需要起服务、不占浏览器标签页，本机也不需要装 Node.js。
 
-- [Node.js](https://nodejs.org/) 18 或更高版本
-- 本地 AI Agent 日志（目前支持由 Claude Code 生成的 `~/.claude/projects/*.jsonl`）
+### 下载安装
 
-### 安装步骤
+到 [Releases 页面](https://github.com/AIKnightPanda/claude-code-token-lens/releases) 下载对应安装包：
 
-1. 克隆仓库：
-   ```bash
-   git clone https://github.com/AIKnightPanda/claude-code-token-lens.git
-   cd claude-code-token-lens
-   ```
+| 平台 | 文件 |
+|---|---|
+| macOS（Apple 芯片与 Intel 通用） | `Claude Code Token Lens_<版本>_universal.dmg` |
+| Windows 10/11（x64） | `Claude Code Token Lens_<版本>_x64-setup.exe`（或 `.msi`） |
 
-2. 安装依赖：
-   ```bash
-   npm install
-   # 也可以使用 yarn install 或 pnpm install
-   ```
+macOS 版用 Developer ID 证书签名并经过 Apple 公证，双击即可打开。
+Windows 版未签名，SmartScreen 弹窗里点「更多信息」→「仍要运行」即可。
 
-### 使用方法
+首次启动会扫描 `~/.claude/projects/` 并缓存结果；之后的刷新只读取上次之后新追加的字节。
 
-1. 启动本地开发服务器：
-   ```bash
-   npm run dev
-   ```
+### 从源码构建
 
-2. 在浏览器中打开 [http://localhost:3000](http://localhost:3000)。首次加载时应用会扫描本地 `.claude` 日志目录并把结果缓存在 `data/` 下；之后的刷新只读取上次之后新追加的字节。
+环境要求：[Node.js](https://nodejs.org/) 18+、[Rust 工具链](https://rustup.rs/)，以及各平台的构建工具
+（macOS 需要 [Xcode Command Line Tools](https://developer.apple.com/xcode/resources/)，
+Windows 需要 [MSVC 与 WebView2](https://tauri.app/start/prerequisites/)）。
 
-想自己核对数字：
+```bash
+git clone https://github.com/AIKnightPanda/claude-code-token-lens.git
+cd claude-code-token-lens
+npm install
+
+npm run tauri:dev     # 带热更新地跑桌面端
+npm run tauri:build   # 产出安装包，在 src-tauri/target/release/bundle/ 下
+```
+
+想自己核对数字（在 Node 里跑，用的是和应用完全相同的解析代码）：
 
 ```bash
 npm run verify
 ```
 
+### 签名与公证（macOS）
+
+macOS 上要让别人下载后双击就能打开，需要两步：**签名**（证明是谁做的）和**公证**
+（把包传给 Apple 扫一遍，Apple 回一张票据订在包里）。只签名不公证，别人下载后仍会被
+Gatekeeper 拦下。
+
+公证**不需要另外申请证书** —— 用的还是同一张 Developer ID Application 证书，
+外加一个 Apple ID 的「App 专用密码」。
+
+**一次性准备：生成 App 专用密码**
+
+1. 浏览器打开 <https://appleid.apple.com>，用你的开发者 Apple ID 登录；
+2. 进「登录与安全」→「App 专用密码」→ 点「+」或「生成密码」；
+3. 名字随便起（比如 `token-lens-notary`），确定后会显示一串
+   `abcd-efgh-ijkl-mnop` 形式的密码 —— **它只显示这一次**，先复制下来；
+4. 回到终端：
+
+   ```bash
+   bash scripts/build-signed.sh --save-password
+   ```
+
+   输入 Apple ID 邮箱和刚才那串密码。它会存进登录钥匙串，以后都不用再输。
+   这个密码不会进 shell 历史，也不会写进仓库里的任何文件。
+
+**之后每次打包**
+
+```bash
+bash scripts/build-signed.sh
+```
+
+签名 → 提交 Apple 公证（一般 1~5 分钟）→ 把票据订进 `.app` 和 `.dmg` → 自动校验。
+最后一行 `spctl` 打印 `accepted` 就说明彻底搞定了。只想快速验证不公证，加
+`SKIP_NOTARIZE=1`。
+
+**GitHub Actions 打包**：在仓库 Settings → Secrets and variables → Actions 里加下面这些
+secret，流水线就会自动签名 + 公证；一个都不配也能构建，只是产出未签名的包。
+
+| Secret | 值 |
+|---|---|
+| `APPLE_CERTIFICATE` | 证书导出的 `.p12` 转 base64：钥匙串访问 → 我的证书 → 右键「导出」存成 `.p12` 并设个密码，然后 `base64 -i cert.p12 \| pbcopy` |
+| `APPLE_CERTIFICATE_PASSWORD` | 上一步导出 `.p12` 时设的密码 |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: 你的名字 (团队ID)` |
+| `APPLE_ID` | 你的 Apple ID 邮箱 |
+| `APPLE_PASSWORD` | 上面生成的 App 专用密码 |
+| `APPLE_TEAM_ID` | 团队 ID |
+
+Windows 侧要去掉 SmartScreen 提示需要另买一张代码签名证书，目前没配。
+
+### 发版
+
+`.github/workflows/release.yml` 会在 GitHub 的机器上把两个平台都构建出来：推一个 `v*` 标签
+（例如 `git tag v1.0.0 && git push origin v1.0.0`），流水线会把 macOS 的 universal `.dmg` 和
+Windows 的 `.exe`/`.msi` 挂到一个草稿 Release 上，本地不需要打包。
+
 ## ⚙️ 配置
 
-全部通过环境变量配置，均非必填。
+桌面应用开箱即用，无需配置。下面这些环境变量只对 Node 侧的工具链（`npm run verify`）
+以及编译进应用的默认值生效。
 
 | 变量 | 默认值 | 作用 |
 |---|---|---|
@@ -83,8 +141,10 @@ npm run verify
 
 本应用**不发起任何对外网络请求** —— 不上传数据，也没有任何遥测。但有两点仍需知悉：
 
-- **看板没有鉴权**，而页面上会显示你的提示词、项目绝对路径和消费金额。因此 `npm run dev` 和 `npm start` 都只绑定 `127.0.0.1`，仅本机可访问。如果你自行改成监听其他地址，同一网络下的任何人都能读到全部内容。
-- **缓存中含提示词原文。** `data/usage_cache.json` 会保存每条提示词的前 10,000 个字符（由 `TOKEN_LENS_PROMPT_MAX_CHARS` 控制），供「对话」页展示。`data/` 已在 gitignore 中。设置 `TOKEN_LENS_STORE_PROMPTS=false` 可完全不保存；删除 `data/` 目录可清除已有内容。`data/turns/` 下的分片文件只含 token 数字，不含任何文本。
+- **应用只会读 `~/.claude/projects/`。** 这条限制写在 Rust 侧而不是界面里：桌面端没有向网页层暴露任何通用的文件系统接口，每一次读取都会先校验路径是否在该目录内。
+- **缓存中含提示词原文。** `usage_cache.json` 会保存每条提示词的前 10,000 个字符，供「对话」页展示。它存放在应用数据目录下 ——
+  macOS 是 `~/Library/Application Support/com.aiknightpanda.claude-code-token-lens/`，
+  Windows 是 `%APPDATA%\\com.aiknightpanda.claude-code-token-lens\\` —— 删掉这个目录就能清空应用存下的所有内容。`turns/` 下的分片文件只含 token 数字，不含任何文本。
 
 ## 📐 成本是怎么算出来的
 

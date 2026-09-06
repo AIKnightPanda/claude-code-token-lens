@@ -946,3 +946,55 @@ select.refresh-btn {
   flex-shrink: 0;
   color: var(--gray-400, #9ca3af);
 }
+
+/* 页脚：软件自身的信息（版本、数据去向、项目主页）。
+   顶部那一排是操作按钮，项目链接混在里面既挤又不同类，所以挪到这里。 */
+.app-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 16px;
+  margin-top: 20px;
+  padding: 18px 0 8px;
+  border-top: 1px solid var(--gray-200, #e5e7eb);
+  font-size: 0.75rem;
+  color: var(--gray-400, #9ca3af);
+}
+
+.app-footer-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-footer-name {
+  font-weight: 600;
+  color: var(--gray-500, #6b7280);
+}
+
+.app-footer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--gray-200, #e5e7eb);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gray-500, #6b7280);
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.app-footer-link:hover {
+  color: var(--indigo-600, #6366f1);
+  border-color: var(--indigo-600, #6366f1);
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.app-footer-link:focus-visible {
+  outline: 2px solid var(--indigo-600, #6366f1);
+  outline-offset: 2px;
+}
