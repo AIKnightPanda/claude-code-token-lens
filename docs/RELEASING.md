@@ -55,6 +55,15 @@ API 密钥传的是文件路径，没有这个问题，而且可以按 key 单�
 | `APPLE_API_KEY` | Key ID（10 位，就是文件名里 `AuthKey_` 后面那段） |
 | `APPLE_API_ISSUER` | Issuer ID（UUID） |
 
+Team ID 不用单独配：工作流从 `APPLE_SIGNING_IDENTITY` 括号里那段解析出来。
+
+私钥材料别经过剪贴板和终端回显，用 `gh` 直接从文件灌进去：
+
+```bash
+base64 -i cert.p12 | gh secret set APPLE_CERTIFICATE --repo <owner>/<repo>
+gh secret set APPLE_API_KEY_P8 --repo <owner>/<repo> < AuthKey_XXXXXXXXXX.p8
+```
+
 Windows 侧要去掉 SmartScreen 提示需要另买一张代码签名证书，目前没配。
 
 ### 为什么 .app 和 .dmg 都要公证

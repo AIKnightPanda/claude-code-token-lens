@@ -97,7 +97,7 @@ The app makes **no outbound network requests** — nothing is uploaded, and ther
 
 **These are API-equivalent costs.** They are derived from token counts at published API rates. On a Pro/Max subscription you are not billed per token, so read the number as a measure of usage scale, not as an invoice.
 
-Three details matter for getting the number right:
+Four details matter for getting the number right:
 
 **Deduplication.** A single API response is written to the log as several lines — one per content block (`thinking`, `text`, each `tool_use`) — and *every one of them carries the same `usage` object*. Counting lines therefore bills one response many times. Turns are deduplicated on `message.id` + `requestId`; on a collision the record with the larger token count wins, because copied transcripts can contain a zeroed-out placeholder alongside the real one.
 
@@ -109,6 +109,8 @@ Three details matter for getting the number right:
 | `session` | `message.id` + `requestId` + `sessionId` | Matches ccusage. Each session's total stands alone, but resumed history is counted again. |
 
 On a typical log set the two differ by roughly 20%.
+
+**Replayed prompts.** Resuming or forking a session copies earlier entries — uuid included — into the new file, so one prompt can end up as a row in every session that inherited it. Turn-level deduplication already keeps the totals right, but the list would show the same question several times over, and a prompt that a resume interrupted would have its cost split across two rows as if it had been asked twice. Those rows are merged back into one, attributed to the session its turns actually landed in.
 
 **Cache tiers.** `cache_creation` distinguishes 5-minute from 1-hour cache writes; they are billed at 1.25× and 2× the input rate respectively. Collapsing them into one rate understates cost, and in practice most Claude Code cache writes are the 1-hour tier.
 

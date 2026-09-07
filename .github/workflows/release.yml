@@ -53,7 +53,13 @@ jobs:
         if: runner.os == 'macOS'
         env:
           API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
+          # Team ID 是签名身份括号里那段，从它解析出来就不用再存一个 secret。
+          team_id="$(printf '%s' "$SIGNING_IDENTITY" | sed -n 's/.*(\([A-Z0-9]*\))$/\1/p')"
+          if [ -n "$team_id" ]; then
+            echo "APPLE_TEAM_ID=$team_id" >> "$GITHUB_ENV"
+          fi
           if [ -z "$API_KEY_P8" ]; then
             echo "未配置 APPLE_API_KEY_P8，本次不公证。"
             exit 0
@@ -81,6 +87,9 @@ jobs:
       # 少这一步双击 dmg 照样弹「无法验证开发者」。
       - name: 公证 DMG (macOS)
         if: runner.os == 'macOS'
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           if [ -z "${APPLE_API_KEY_PATH:-}" ]; then
             echo "没有公证密钥，跳过。"
@@ -91,8 +100,8 @@ jobs:
             echo "公证 $dmg"
             xcrun notarytool submit "$dmg" \
               --key "$APPLE_API_KEY_PATH" \
-              --key-id "${{ secrets.APPLE_API_KEY }}" \
-              --issuer "${{ secrets.APPLE_API_ISSUER }}" --wait
+              --key-id "$KEY_ID" \
+              --issuer "$ISSUER" --wait
             xcrun stapler staple "$dmg"
           done
 
