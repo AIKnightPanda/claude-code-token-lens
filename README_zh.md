@@ -80,7 +80,7 @@ npm run verify
 | 变量 | 默认值 | 作用 |
 |---|---|---|
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | 从哪里读取日志 |
-| `TOKEN_LENS_DEDUP_SCOPE` | `global` | `global` 或 `session`，见「成本是怎么算出来的」 |
+| `TOKEN_LENS_DEDUP_SCOPE` | `global` | `global` 会连 resume/fork 重放进新文件的历史一并消除；`session` 让每个会话独立计数（与 ccusage 一致） |
 | `TOKEN_LENS_STORE_PROMPTS` | `true` | 设为 `false` 则不在磁盘上保留任何提示词文本 |
 | `TOKEN_LENS_PROMPT_MAX_CHARS` | `10000` | 每条提示词保留的字符数 |
 
@@ -96,50 +96,6 @@ npm run verify
 ## 📐 成本是怎么算出来的
 
 **这里显示的是「等价 API 成本」**：按官方 API 价目从 token 数推算而来。如果你用的是 Pro/Max 订阅，实际并不按 token 计费，所以这个数字应当理解为**用量规模**，而不是账单金额。
-
-要把这个数算对，有四处关键细节：
-
-**去重。** 一次 API 响应在日志里会被写成多行 —— 每个 content block 一行（`thinking`、`text`、每个 `tool_use`）—— 而**每一行都携带同一份 `usage`**。按行累加等于把同一次响应重复计费。本项目以 `message.id` + `requestId` 为键去重；同键冲突时保留 token 更大的那条，因为被复制的转录里可能同时存在一份真实记录和一份数值全为 0 的占位副本。
-
-`TOKEN_LENS_DEDUP_SCOPE` 控制去重的作用范围：
-
-| 取值 | 去重键 | 行为 |
-|---|---|---|
-| `global`（默认） | `message.id` + `requestId` | 连 resume/fork 时被复制进新文件的历史一并消除，最接近真实账单。被继承的历史会归属到它最早出现的那个 session，因此被 resume 的会话看起来会「变便宜」。 |
-| `session` | `message.id` + `requestId` + `sessionId` | 与 ccusage 一致。每个 session 的数字独立自洽，但 resume 重放的历史会被算两次。 |
-
-在常见的日志量下，两档相差约 20%。
-
-**重放的提问。** resume 或 fork 会把历史条目连 uuid 一起复制进新的会话文件，同一次提问因此可能在每个继承过它的会话里各留一行。turn 级去重已经保证了总额正确，但列表里会并排出现几条一模一样的提问；被 resume 打断的那次提问更麻烦——它的开销被切成两半挂在两行上，看起来像同一句话问了两次、各花了一笔钱。这些行会按 uuid 合并回一条，归到 turn 实际落在的那个会话名下。
-
-**缓存分档。** `cache_creation` 区分 5 分钟与 1 小时两种缓存写入，费率分别是输入价的 1.25 倍和 2 倍。把两者合并成一个费率会低估成本，而实际使用中 Claude Code 的缓存写入绝大部分属于 1 小时档。
-
-**单一事实源。** session、project、conversation、daily 的数字全部由同一批已去重的 turn 记录派生，因此看板上每一层的合计必然相等。
-
-### 日志本身缺失的部分
-
-Claude Code 只在 `assistant` 条目上写 token 用量。有两类真实计费的调用**没有任何用量记录**，因此任何基于这些日志的工具（本项目和 ccusage 都一样）都无法为其计价：
-
-- **上下文压缩**（`/compact`）。总结调用真实发生且会计费，但用量缺失。日志里**有**的是规模：`compact_boundary` 条目带着 `preTokens` / `postTokens`。这类记录会显示被压缩的上下文体量，成本标为**无法统计**，而不是误导性的 `$0.00` —— 这次调用确实发生并计费了，只是没办法从日志里统计出来。
-- **会话标题生成**（`ai-title`）。只存下了生成结果这个字符串。
-
-除此之外所有打到 API 的调用 —— 包括子 agent 轮次和技能加载后的轮次 —— 都是 `assistant` 条目，都已计入。
-
-### 指令会保留，不会被隐藏
-
-你执行的斜杠命令（`/compact`、`/init`、`/prd-as-code` 等）会作为独立记录出现，带 **指令** 标记，并显示日志归属给它的真实成本；`/compact` 还会附带这次压缩掉了多少上下文。不产生任何开销、只改本地设置的命令（`/model`、`/context`、`/agents`）不展示 —— 留在列表里只是一堆 `$0.00` 噪音。
-
-后台唤醒不算一次对话。后台命令或 `Monitor` 结束时，Claude Code 会投递一条 `<task-notification>` 唤醒会话让 Claude 继续干活。那是你某次提问所发起工作的延续，因此这些轮次会归并到那条提问下，而不单独占一行；下钻到交互明细即可看到是哪个任务唤醒的，带 **后台任务唤醒** 标记。
-
-其余由机器生成的内容都不进对话列表：以 `isMeta` 注入的技能正文、压缩摘要（`isCompactSummary`）、命令的本地输出、`<system-reminder>` 块、以及中断占位。过滤**只改变归属**，token 与成本总额在开关过滤前后逐位相同（已实测）。
-
-## 🛣️ 路线图
-
-- [x] 支持 Claude Code (`.claude/projects/`) 日志解析
-- [x] 日期范围过滤（最近 7 天 / 30 天 / 全部）
-- [ ] 增加对 Cursor AI 日志的支持
-- [ ] 增加对 Aider 日志的支持
-- [ ] 自定义定价配置界面
 
 ## 🙏 致谢 / 灵感来源
 

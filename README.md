@@ -80,7 +80,7 @@ tooling (`npm run verify`) and the defaults compiled into the app.
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Where to read logs from |
-| `TOKEN_LENS_DEDUP_SCOPE` | `global` | `global` or `session` — see "How costs are computed" |
+| `TOKEN_LENS_DEDUP_SCOPE` | `global` | `global` also removes history replayed into a new file by resume/fork; `session` counts each session on its own (matches ccusage) |
 | `TOKEN_LENS_STORE_PROMPTS` | `true` | Set to `false` to keep no prompt text on disk |
 | `TOKEN_LENS_PROMPT_MAX_CHARS` | `10000` | Characters kept per prompt |
 
@@ -96,50 +96,6 @@ The app makes **no outbound network requests** — nothing is uploaded, and ther
 ## 📐 How costs are computed
 
 **These are API-equivalent costs.** They are derived from token counts at published API rates. On a Pro/Max subscription you are not billed per token, so read the number as a measure of usage scale, not as an invoice.
-
-Four details matter for getting the number right:
-
-**Deduplication.** A single API response is written to the log as several lines — one per content block (`thinking`, `text`, each `tool_use`) — and *every one of them carries the same `usage` object*. Counting lines therefore bills one response many times. Turns are deduplicated on `message.id` + `requestId`; on a collision the record with the larger token count wins, because copied transcripts can contain a zeroed-out placeholder alongside the real one.
-
-`TOKEN_LENS_DEDUP_SCOPE` controls how far deduplication reaches:
-
-| Value | Key | Behaviour |
-|---|---|---|
-| `global` (default) | `message.id` + `requestId` | Also removes history replayed into a new file when a session is resumed or forked. Closest to the real bill. Inherited history is attributed to the session where it first appeared, so a resumed session looks cheaper. |
-| `session` | `message.id` + `requestId` + `sessionId` | Matches ccusage. Each session's total stands alone, but resumed history is counted again. |
-
-On a typical log set the two differ by roughly 20%.
-
-**Replayed prompts.** Resuming or forking a session copies earlier entries — uuid included — into the new file, so one prompt can end up as a row in every session that inherited it. Turn-level deduplication already keeps the totals right, but the list would show the same question several times over, and a prompt that a resume interrupted would have its cost split across two rows as if it had been asked twice. Those rows are merged back into one, attributed to the session its turns actually landed in.
-
-**Cache tiers.** `cache_creation` distinguishes 5-minute from 1-hour cache writes; they are billed at 1.25× and 2× the input rate respectively. Collapsing them into one rate understates cost, and in practice most Claude Code cache writes are the 1-hour tier.
-
-**Single source of truth.** Session, project, conversation, and daily figures are all derived from the same deduplicated turn records, so every level of the dashboard adds up to the same total.
-
-### What the logs cannot tell you
-
-Claude Code writes token usage only on `assistant` entries. Two kinds of billable work never get a usage record, so **no tool that reads these logs — this one or ccusage — can price them**:
-
-- **Context compaction** (`/compact`). The summarisation call is real and billed, but its usage is absent. What *is* recorded is the scale: a `compact_boundary` entry carries `preTokens`/`postTokens`. Those rows are shown with the context size that was compacted and a cost of *not measurable*, rather than a misleading `$0.00` — the call happened and was billed; there is simply no way to measure it from the logs.
-- **Session title generation** (`ai-title`). Only the resulting string is stored.
-
-Everything else that hits the API — including sub-agent turns and skill-assisted turns — is an `assistant` entry and is counted.
-
-### Commands are kept, not hidden
-
-Slash commands you run (`/compact`, `/init`, `/prd-as-code`, …) appear as their own rows, tagged **Command**, with whatever cost the log attributes to them — `/compact` also shows how much context it collapsed. Commands that cost nothing and merely change a local setting (`/model`, `/context`, `/agents`) are left out; they would be a column of `$0.00` noise.
-
-Background wake-ups are not conversations. When a background command or a `Monitor` finishes, Claude Code delivers a `<task-notification>` that wakes the session and Claude keeps working. That is a continuation of whatever prompt of yours started the job, so its turns roll up into that prompt rather than appearing as a separate row; drill into the turns to see which task woke each one, tagged **Woken by background task**.
-
-Everything else machine-generated is filtered out of the conversation list: skill bodies injected as `isMeta`, compaction summaries (`isCompactSummary`), local command output, `<system-reminder>` blocks, and interruption placeholders. Filtering changes *attribution only* — the token and cost totals are byte-identical with the filter on or off.
-
-## 🛣️ Roadmap
-
-- [x] Claude Code (`.claude/projects/`) log parsing support
-- [x] Date-range filtering (Last 7 / 30 days, All time)
-- [ ] Add support for Cursor AI logs
-- [ ] Add support for Aider logs
-- [ ] Custom pricing configuration interface
 
 ## 🙏 Acknowledgements / Inspiration
 
