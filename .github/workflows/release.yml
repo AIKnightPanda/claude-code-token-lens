@@ -31,9 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 跟开发机同一个大版本：node 22 带的是 npm 10，而 npm 11 写出来的
+      # lockfile 里 optional 依赖的记法它认不了，npm ci 会直接判定不同步。
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
