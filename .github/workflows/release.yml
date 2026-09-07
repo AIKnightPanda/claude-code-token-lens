@@ -129,10 +129,12 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 \
             || gh release create "$TAG" --draft --title "Claude Code Token Lens $TAG" --notes "$notes" \
             || true
-          shopt -s nullglob globstar
-          files=(src-tauri/target/**/release/bundle/**/*.dmg
-                 src-tauri/target/**/release/bundle/**/*.exe
-                 src-tauri/target/**/release/bundle/**/*.msi)
+          # 不能用 globstar：macOS runner 的 /bin/bash 还是 3.2，没这个选项。
+          files=()
+          while IFS= read -r f; do files+=("$f"); done < <(
+            find src-tauri/target -type f -path '*/release/bundle/*' \
+              \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) 2>/dev/null
+          )
           if [ ${#files[@]} -eq 0 ]; then
             echo "没有找到安装包" >&2
             exit 1
