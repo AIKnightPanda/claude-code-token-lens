@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import {
   Activity, DollarSign, Cpu, Calendar, AlertCircle, TerminalSquare, RefreshCw,
-  FolderOpen, MessageSquare, BarChart3, ChevronRight, ChevronUp, ChevronDown,
+  FolderOpen, MessageSquare, BarChart3, ChevronRight, ChevronUp, ChevronDown, Check,
   ChevronsUpDown, AlignLeft, ArrowLeft, X, Globe, Info, ExternalLink
 } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -142,85 +142,148 @@ const StatCard = ({ icon, tone, title, value, compact }) => {
 const PROMPT_LINES = 3;
 
 /**
- * 三行折叠的提示词，「展开」紧跟在被截断的正文后面。
- *
- * 用 float 让正文绕开按钮做不到这个效果：绕排是按整词换行的，最后一个放不下的
- * 词会被推到下一行（然后被裁掉），于是文字和按钮之间总留着一段空白。要让省略号
- * 正好贴住最后一个字，只能量出该在第几个字符处截断——二分一次是 log2(n) 步，
- * 一条几百字的提示词也就八九次测量。
+ * 提示词展示组件：
+ * 超过 3 行时折叠并在第 3 行末尾悬浮显示「… 展开」；
+ * 展开后显示完整文本，并在底部右侧显示「收起」按钮。
  */
 const ExpandablePrompt = ({ prompt, t }) => {
   const [expanded, setExpanded] = useState(false);
-  // 截断位置；-1 表示放得下，整段直接显示。
-  const [clipAt, setClipAt] = useState(-1);
-  const bodyRef = useRef(null);
+  const [canExpand, setCanExpand] = useState(false);
   const textRef = useRef(null);
-  const moreRef = useRef(null);
 
   useLayoutEffect(() => {
-    if (expanded) return;
-    const body = bodyRef.current;
-    const text = textRef.current;
-    if (!body || !text) return;
+    const el = textRef.current;
+    if (!el) return;
 
-    const measure = () => {
-      const lineHeight = parseFloat(getComputedStyle(body).lineHeight);
-      if (!lineHeight) return;
-      // max-height 只管裁剪，scrollHeight 反映的仍是内容的真实高度。
-      const limit = lineHeight * PROMPT_LINES + 1;
-
-      // 先按全文量一次：放得下就不用截，也不用显示按钮。
-      text.textContent = prompt;
-      if (moreRef.current) moreRef.current.hidden = true;
-      if (body.scrollHeight <= limit) {
-        setClipAt(-1);
-        return;
+    const checkOverflow = () => {
+      const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20;
+      const limit = lineHeight * PROMPT_LINES + 1.5;
+      const isOver = el.scrollHeight > limit;
+      setCanExpand(isOver);
+      if (!isOver) {
+        setExpanded(false);
       }
-
-      // 「… 展开」要占掉第三行末尾的宽度，量的时候必须让它参与排版。
-      if (moreRef.current) moreRef.current.hidden = false;
-      let lo = 0;
-      let hi = prompt.length;
-      while (lo < hi) {
-        const mid = Math.ceil((lo + hi) / 2);
-        text.textContent = prompt.slice(0, mid);
-        if (body.scrollHeight <= limit) lo = mid;
-        else hi = mid - 1;
-      }
-      setClipAt(lo);
     };
 
-    measure();
-    // 列宽变了截断位置就得重算。容器高度被 max-height 钉死，
-    // 改写内容不会反过来触发这个观察器，不存在自激。
+    checkOverflow();
+
     if (typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(body);
+    const ro = new ResizeObserver(checkOverflow);
+    ro.observe(el);
     return () => ro.disconnect();
-  }, [prompt, expanded]);
+  }, [prompt]);
 
   if (!prompt) return null;
 
-  const clipped = !expanded && clipAt >= 0;
-  const toggle = (
-    <button type="button" className="prompt-toggle" onClick={() => setExpanded((v) => !v)}>
-      {expanded ? t.showLess : t.readMore}
-    </button>
+  return (
+    <div className={`prompt-wrapper prompt-body ${expanded ? 'is-expanded' : 'is-collapsed'}`}>
+      <div
+        ref={textRef}
+        className={`prompt-text ${expanded ? 'is-expanded' : 'is-collapsed'}`}
+      >
+        {prompt}
+      </div>
+
+      {!expanded && canExpand && (
+        <button
+          type="button"
+          className="prompt-expand-overlay"
+          onClick={() => setExpanded(true)}
+          title={t.readMore}
+        >
+          <span className="prompt-expand-btn">{t.readMore}</span>
+        </button>
+      )}
+
+      {expanded && canExpand && (
+        <div className="prompt-collapse-bar">
+          <button
+            type="button"
+            className="prompt-collapse-btn"
+            onClick={() => setExpanded(false)}
+          >
+            {t.showLess}
+            <ChevronUp size={13} />
+          </button>
+        </div>
+      )}
+    </div>
   );
+};
+
+/**
+ * 自定义日期范围下拉菜单：
+ * 替代 macOS 原生系统 select，保证弹窗字体与样式和全站一致（Inter/Outfit），
+ * 支持点击外部自动收起与 Escape 键盘关闭。
+ */
+const DateRangeDropdown = ({ value, onChange, t }) => {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  const options = [
+    { value: 'all', label: t.allTime },
+    { value: '30d', label: t.last30 },
+    { value: '7d', label: t.last7 },
+  ];
+
+  const currentLabel = options.find((o) => o.value === value)?.label || t.allTime;
+
+  useEffect(() => {
+    if (!open) return;
+    const handleDown = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    const handleKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', handleDown);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleDown);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [open]);
 
   return (
-    <div ref={bodyRef} className={'prompt-body ' + (expanded ? 'is-expanded' : 'is-collapsed')}>
-      {/* 测量期间这个 span 的内容会被直接改写，随后的渲染再把它落到 state 上。 */}
-      <span ref={textRef}>{clipped ? prompt.slice(0, clipAt) : prompt}</span>
-      {/* 始终留在 DOM 里，只是放得下时隐藏：测量二分位置时要靠它占住第三行
-          末尾的宽度，等 clipAt 定下来才渲染就已经晚了。 */}
-      {!expanded && (
-        <span ref={moreRef} className="prompt-more" hidden={!clipped}>
-          {/* 省略号是正文被截断的记号，属于正文，不是按钮的一部分。 */}
-          <span className="prompt-ellipsis">…</span> {toggle}
-        </span>
+    <div className="date-select-wrapper" ref={containerRef}>
+      <button
+        type="button"
+        className={`refresh-btn date-select-btn ${open ? 'is-open' : ''}`}
+        onClick={() => setOpen((prev) => !prev)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={t.range}
+      >
+        <Calendar size={18} className="date-select-icon" />
+        <span>{currentLabel}</span>
+        <ChevronDown size={14} className={`date-select-arrow ${open ? 'is-open' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="date-dropdown-menu" role="listbox">
+          {options.map((opt) => {
+            const isSelected = opt.value === value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                className={`date-dropdown-item ${isSelected ? 'is-selected' : ''}`}
+                role="option"
+                aria-selected={isSelected}
+                onClick={() => {
+                  onChange(opt.value);
+                  setOpen(false);
+                }}
+              >
+                <span>{opt.label}</span>
+                {isSelected && <Check size={14} className="date-dropdown-check" />}
+              </button>
+            );
+          })}
+        </div>
       )}
-      {expanded && toggle}
     </div>
   );
 };
@@ -1047,10 +1110,12 @@ export default function Dashboard() {
         <div>
           <h1 className="header-title">
             <TerminalSquare className="icon-primary" size={32} /> {t.title}
-            {/* 项目主页贴着标题：它说的是「这个软件是什么」，不是一个操作。 */}
+            {/* 项目主页入口：显示 GitHub 图标、项目文案与外链指示 */}
             <button type="button" className="header-github" onClick={openProjectPage}
               aria-label={t.viewOnGithub} title={t.viewOnGithub}>
-              <GithubIcon size={18} />
+              <GithubIcon size={16} />
+              <span className="header-github-label">{t.githubProject}</span>
+              <ExternalLink size={12} className="header-github-ext" />
             </button>
           </h1>
           <p className="header-subtitle">
@@ -1063,17 +1128,11 @@ export default function Dashboard() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <select
-            className="refresh-btn"
-            style={{ background: 'var(--gray-100)', color: 'var(--gray-700)', borderColor: 'var(--gray-300)' }}
+          <DateRangeDropdown
             value={dateRange}
-            aria-label={t.range}
-            onChange={(e) => { setDateRange(e.target.value); setVisibleRows(PAGE_SIZE); }}
-          >
-            <option value="all">{t.allTime}</option>
-            <option value="30d">{t.last30}</option>
-            <option value="7d">{t.last7}</option>
-          </select>
+            onChange={(val) => { setDateRange(val); setVisibleRows(PAGE_SIZE); }}
+            t={t}
+          />
           <button onClick={toggleLang} className="refresh-btn" style={{ background: 'var(--gray-100)', color: 'var(--gray-700)', borderColor: 'var(--gray-300)' }}>
             <Globe size={18} /> {lang === 'en' ? '中文' : 'EN'}
           </button>

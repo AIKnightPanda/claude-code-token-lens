@@ -354,6 +354,7 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 
 .data-table tbody tr:hover td {
   background-color: #fafbfd;
+  --prompt-bg: #fafbfd;
 }
 
 .data-table tbody tr.hover-lift:hover {
@@ -693,11 +694,105 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
   border-radius: 4px;
 }
 
-/* 时间范围下拉，和按钮保持同一视觉语言 */
-select.refresh-btn {
-  appearance: none;
-  padding-right: 14px;
+/* 时间范围筛选自定义下拉组件 */
+.date-select-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.date-select-btn {
+  background: var(--gray-100, #f1f5f9);
+  color: var(--gray-700, #334155);
+  border: 1px solid var(--gray-300, #cbd5e1);
+  box-shadow: none;
+  padding: 12px 20px;
+  gap: 8px;
+  font-family: "Inter", sans-serif;
+}
+
+.date-select-btn:hover {
+  background: var(--gray-200, #e2e8f0);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.date-select-btn.is-open {
+  background: var(--gray-200, #e2e8f0);
+  border-color: var(--gray-400, #94a3b8);
+}
+
+.date-select-btn .date-select-arrow {
+  transition: transform 0.2s ease;
+  color: var(--gray-500, #6b7280);
+}
+
+.date-select-btn .date-select-arrow.is-open {
+  transform: rotate(180deg);
+}
+
+/* 自定义下拉弹窗，彻底摆脱原生 select 弹窗字体不统一的问题 */
+.date-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 155px;
+  background: #ffffff;
+  border: 1px solid var(--gray-200, #e2e8f0);
+  border-radius: 14px;
+  padding: 6px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: dropdownFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.date-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 14px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--gray-700, #334155);
+  font-family: "Inter", sans-serif;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: left;
   cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.date-dropdown-item:hover {
+  background-color: var(--gray-100, #f1f5f9);
+  color: var(--gray-900, #0f172a);
+}
+
+.date-dropdown-item.is-selected {
+  color: var(--indigo-600, #4f46e5);
+  font-weight: 600;
+  background-color: var(--indigo-50, #eef2ff);
+}
+
+.date-dropdown-check {
+  margin-left: 10px;
+  color: var(--indigo-600, #4f46e5);
+  flex-shrink: 0;
 }
 
 /* 续接会话标记：内容全部继承自更早的会话，数字为 0 但不应从列表里消失 */
@@ -999,25 +1094,44 @@ select.refresh-btn {
   outline-offset: 2px;
 }
 
-/* 标题旁的项目主页入口。图标按钮，不跟顶部那排操作按钮抢注意力。 */
+/* 标题旁的项目主页入口。微型徽章按钮，带有图标、说明文案和外链指示。 */
 .header-github {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--gray-400, #9ca3af);
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--gray-200, #e2e8f0);
+  border-radius: 9999px;
+  background: var(--gray-50, #f8fafc);
+  color: var(--gray-600, #475569);
+  font-family: "Inter", sans-serif;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: normal;
   cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .header-github:hover {
-  color: var(--gray-900, #111827);
-  background: var(--gray-100, #f3f4f6);
+  color: var(--gray-900, #0f172a);
+  background: var(--gray-100, #f1f5f9);
+  border-color: var(--gray-300, #cbd5e1);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.06);
+}
+
+.header-github-label {
+  line-height: 1;
+}
+
+.header-github-ext {
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.header-github:hover .header-github-ext {
+  opacity: 1;
 }
 
 .header-github:focus-visible {
@@ -1099,54 +1213,104 @@ select.refresh-btn {
 }
 
 /*
- * 折叠状态下的提示词：正文按字符截断到三行（见 ExpandablePrompt），
- * 「… 展开」直接跟在末尾，不需要 float 绕排。
+ * 提示词展开/折叠：
+ * 超过 3 行时折叠，并在第 3 行末尾悬浮展示渐变「… 展开」；
+ * 展开后展示完整内容，并在底部右侧展示「收起」操作按钮。
  */
+.prompt-wrapper,
 .prompt-body {
+  position: relative;
   font-size: 0.85rem;
   line-height: 1.5;
   color: var(--gray-700, #374151);
   word-break: break-word;
 }
 
-.prompt-body.is-collapsed {
-  /* 3 行 × 0.85rem × 1.5。测量算出来的截断位置正好填满这个高度。 */
-  max-height: 3.825rem;
-  overflow: hidden;
+.prompt-text {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--gray-700, #374151);
+  word-break: break-word;
 }
 
-.prompt-body.is-expanded {
+.prompt-text.is-collapsed {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  line-clamp: 3;
+  overflow: hidden;
+  max-height: 4.5em; /* 3 行 × 1.5 line-height */
+}
+
+.prompt-text.is-expanded {
   white-space: pre-wrap;
 }
 
-/* 省略号和按钮之间不能断行，否则「展开」会被甩到下一行裁掉。 */
-.prompt-more {
-  white-space: nowrap;
-}
-
-/* 省略号是正文被截断的记号，跟着正文的字号和颜色走。 */
-.prompt-ellipsis {
-  color: inherit;
-}
-
-.prompt-toggle {
-  padding: 0;
+/* 折叠时第 3 行末尾悬浮展示「展开」 */
+.prompt-expand-overlay {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
   border: none;
-  background: none;
-  color: var(--indigo-600, #6366f1);
-  font-size: 0.75rem;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, var(--prompt-bg, #ffffff) 20px, var(--prompt-bg, #ffffff) 100%);
+  padding: 0 0 0 22px;
+  margin: 0;
   font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--indigo-600, #4f46e5);
   cursor: pointer;
+  z-index: 2;
+}
+
+.prompt-expand-overlay:hover .prompt-expand-btn {
   text-decoration: underline;
+  color: var(--indigo-700, #4338ca);
 }
 
-.is-expanded .prompt-toggle {
-  display: block;
-  margin-top: 4px;
+.prompt-expand-overlay .prompt-expand-btn {
+  font-weight: 500;
+  font-size: 0.8rem;
 }
 
-.prompt-toggle:focus-visible {
-  outline: 2px solid var(--indigo-600, #6366f1);
+.prompt-expand-overlay:focus-visible {
+  outline: 2px solid var(--indigo-600, #4f46e5);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: 4px;
+}
+
+/* 展开时右侧对齐的「收起」控制栏 */
+.prompt-collapse-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.prompt-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border: 1px solid var(--indigo-100, #e0e7ff);
+  background: var(--indigo-50, #eef2ff);
+  color: var(--indigo-600, #4f46e5);
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-family: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.prompt-collapse-btn:hover {
+  background: var(--indigo-100, #e0e7ff);
+  color: var(--indigo-700, #4338ca);
+}
+
+.prompt-collapse-btn:focus-visible {
+  outline: 2px solid var(--indigo-600, #4f46e5);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
