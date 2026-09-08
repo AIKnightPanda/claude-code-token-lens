@@ -115,15 +115,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
+          # Release notes 面向所有人，一律英文。
           notes=$(cat <<'NOTES'
-          ### 下载
+          ### Download
 
-          - **macOS**：`.dmg`（universal，Apple 芯片与 Intel 通用），已签名并经 Apple 公证，双击即可打开
-          - **Windows**：`.exe`（安装包）或 `.msi`；未签名，SmartScreen 弹窗里点「更多信息」→「仍要运行」
+          - **macOS** — `.dmg` (universal: Apple Silicon and Intel). Signed with a Developer ID
+            certificate and notarized by Apple, so it opens with a double-click.
+          - **Windows** — `.exe` installer, or the `.msi`. Unsigned: on the SmartScreen dialog,
+            click *More info* → *Run anyway*.
 
-          ### 说明
+          ### Notes
 
-          应用只读取本机 `~/.claude/projects/` 下的日志，不联网、不上传任何数据。
+          The app only ever reads logs from `~/.claude/projects/` on your machine. It makes no
+          network requests and uploads nothing.
           NOTES
           )
           gh release view "$TAG" >/dev/null 2>&1 \
