@@ -4,13 +4,15 @@
 
 ![Claude Code Token Lens](public/dashboard_preview.png)
 
-**Claude Code Token Lens** is a beautiful, local-first token usage tracker and analytics dashboard for AI coding agents. 
+**Claude Code Token Lens** is a local desktop app that shows you what your Claude Code usage actually costs — broken down by project, by session, and by every single conversation.
 
-Initially built to parse local logs for **Claude Code**, the architecture is designed to be platform-agnostic, allowing future support for other AI agents (Cursor, Aider, GitHub Copilot CLI, etc.). It aggregates token usage, calculates exact costs, and visualizes daily trends with rich, interactive drill-down capabilities (Project > Session > Conversation > Turns).
+It reads the `.jsonl` logs Claude Code already writes to `~/.claude/projects/` on your machine, and lays every prompt out side by side with its price. Once you can see which conversations cost many times what the others did, you can see what you were doing differently — and stop burning tokens on it.
 
 ## 🎯 Why this exists
 
-While you work, Claude Code tells you nothing about what it costs. Not what this conversation just spent, not whether that was a lot or a little, not which project is quietly eating your month. The usage happens, and then it's gone.
+Claude Code tells you how many tokens a conversation used. It never tells you what that was worth.
+
+And a token count on its own doesn't mean much: not whether that was a lot or a little, not how it compares to the prompt before it, not which project is quietly eating your month. The usage happens, and then it's gone.
 
 This gives you the number back — and, more importantly, something to compare it against:
 
@@ -19,18 +21,14 @@ This gives you the number back — and, more importantly, something to compare i
 - **Per conversation** — what that single prompt cost, listed right next to every other one
 - **Per turn** — drill in and see where inside a conversation the money actually went
 
-Because it all sits in one sortable list, an expensive conversation stops being a mystery. You can see it beside the cheap ones and work out what was different — and the totals are the same numbers all the way down, so a project's cost is exactly the sum of the prompts inside it.
+The totals are the same numbers all the way down, so a project's cost is exactly the sum of the prompts inside it.
 
 ## ✨ Features
 
-- 🔒 **Local-First & Secure**: Runs entirely on your local machine. It reads your agent's local JSON logs without sending your private codebase or prompt history to any external server. Your data stays yours.
-- 📊 **Detailed Dashboards**: View your total cost, token consumption, and active days at a glance through a modern, glassmorphism-inspired UI.
-- 📈 **Daily Trends**: A cost trend line plus a per-day usage log, filterable to the last 7 / 30 days.
-- ⚖️ **Volume vs Cost**: Token share and cost share side by side. Cache reads routinely account for ~98% of tokens but a fraction of the bill, while output tokens are the reverse — the chart shows that mismatch and the effective $/M rate for each tier.
-- 🔍 **Deep Drill-Down UI**: Seamlessly filter and navigate from **Projects** -> **Sessions** -> **Conversations** -> **Individual Turns**.
-- 🏷️ **Smart Filtering**: Inline filter bubbles make it easy to see exactly what context you are viewing, with one-click clearing.
-- 💵 **Accurate Cost Accounting**: Deduplicates the log's repeated `usage` records, prices 5-minute and 1-hour cache writes separately, and accounts for fast-mode and server-tool billing.
-- ✅ **Verifiable**: `npm run verify` recomputes every figure from the raw logs with an independent code path and asserts that all aggregation layers agree.
+- 🔍 **Compare, don't just total**: Projects → Sessions → Conversations → Turns, each level a sortable list. An expensive conversation stops being a mystery once it sits beside the cheap ones.
+- 💵 **Money, not just tokens**: Every row carries a cost, priced per tier — cache reads are ~98% of your tokens and a rounding error on the bill; output tokens are the reverse.
+- 🔒 **Local-first & secure**: Reads only `~/.claude/projects/`, enforced in Rust rather than in the UI. No outbound network requests, no telemetry, nothing uploaded.
+- ⚡ **Fast on large logs**: The first launch scans everything and caches it; later refreshes read only the bytes appended since. Single session logs of 60MB+ open without a stall.
 
 ## 🚀 Getting Started
 
