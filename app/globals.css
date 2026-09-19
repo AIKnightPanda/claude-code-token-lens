@@ -51,16 +51,63 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 }
 
 /* Layout classes */
+/* 应用外壳：数据源切换条 + 下面的看板，用 flex 列布局让看板的
+   loading/error 全屏态（.center-container）填满剩余高度，而不是
+   在切换条之外再叠出一个 100vh，把页面撑出滚动条。 */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* 挂在刷新按钮右边，和它们同属标题栏右侧的控件簇——不再单独占一整行，
+   下面不会再空出一大块高度。 */
+.provider-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 9999px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.02);
+}
+
+.provider-switch-btn {
+  padding: 7px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 9999px;
+  color: var(--gray-500);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: "Outfit", sans-serif;
+}
+
+.provider-switch-btn:hover {
+  color: var(--gray-800);
+}
+
+.provider-switch-btn.active {
+  color: white;
+  background: var(--indigo-gradient);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
+}
+
 .center-container {
   display: flex;
-  height: 100vh;
+  flex: 1;
   align-items: center;
   justify-content: center;
   background-color: var(--background);
 }
 
 .dashboard-container {
-  min-height: 100vh;
+  /* 在 .app-shell 里作为 flex 子项：flex:1 填满切换条以外的剩余高度，
+     不再自己设 min-height:100vh —— 那样会把切换条的高度也叠加进总高度。 */
+  flex: 1;
   background-color: var(--background);
   padding: 32px 24px;
   color: var(--gray-800);
@@ -78,11 +125,62 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
   }
 }
 
+/* 标题栏现在直接挂在 .app-shell 下（不再套在 .dashboard-container 里），
+   水平内边距和断点跟 .dashboard-container 保持一致，否则会贴着窗口边缘。
+   允许换行：窗口变窄时右侧一整簇控件（时间范围/语言/刷新/数据源切换）
+   没地方摆，宁可换到标题下面一行，也不要把标题挤没或者横向溢出。 */
 .dashboard-header {
-  margin-bottom: 48px;
+  padding: 32px 24px 20px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 16px;
+  column-gap: 16px;
+}
+
+@media (min-width: 768px) {
+  .dashboard-header {
+    padding: 32px 32px 20px;
+  }
+}
+
+@media (min-width: 1600px) {
+  .dashboard-header {
+    padding: 56px 64px 20px;
+  }
+}
+
+/* 标题栏右侧的控件簇：时间范围、语言、刷新、数据源切换。自己也会换行，
+   窄窗口下宁可分两行摆右侧这一组，也不跟标题挤在同一行里重叠。 */
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 窗口窄到放不下"标题 + 一整排控件"时，标题独占一行，控件簇挪到下面，
+   靠左对齐（跟标题对齐），不然右对齐会显得和左边的标题完全不相关。 */
+@media (max-width: 860px) {
+  .dashboard-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .header-controls {
+    justify-content: flex-start;
+  }
+}
+
+/* 更窄的窗口下，超大号标题本身也放不下，会把 GitHub 徽章挤到换行、
+   甚至跟副标题重叠——先降字号，给右边的图标和徽章留出空间。 */
+@media (max-width: 520px) {
+  .header-title {
+    font-size: 1.6rem;
+    gap: 10px;
+  }
 }
 
 .header-title {
@@ -91,6 +189,8 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
   color: var(--gray-900);
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 8px;
   gap: 16px;
   margin: 0;
   letter-spacing: -0.02em;
@@ -553,16 +653,54 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 }
 
 /* Tabs */
+.tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
 .tabs-container {
   display: flex;
   gap: 8px;
-  margin-bottom: 32px;
   background: rgba(255, 255, 255, 0.6);
   padding: 8px;
   border-radius: 16px;
   backdrop-filter: blur(10px);
   box-shadow: 0 2px 10px rgba(0,0,0,0.02);
   width: fit-content;
+}
+
+/* 价目表 + 省 token 技巧两个按钮的容器，一起靠在 tab 行最右侧。 */
+.tabs-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 成本依据 / 省 token 技巧按钮：跟 tab 切换无关，视觉上要和 tab 区分开。 */
+.pricing-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.6);
+  border: none;
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.02);
+  color: var(--gray-500);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pricing-tab-btn:hover {
+  color: var(--gray-800);
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .tab-btn {
@@ -968,10 +1106,46 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 }
 
 /* 成本未被日志记录时，显示文字而非 $0.00，避免让人以为这次操作是免费的 */
+.quota-left {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  column-gap: 8px;
+  row-gap: 2px;
+  justify-content: start;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--gray-700, #374151);
+  white-space: nowrap;
+}
+
+.quota-sub {
+  margin-top: 2px;
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--gray-500);
+  cursor: help;
+}
+
 .cost-unlogged {
   font-weight: 500;
   font-style: italic;
   color: var(--gray-400, #9ca3af);
+  cursor: help;
+}
+
+/* 目标模式：提示词来自续接当前 thread goal 的系统模板，不是这一轮新打的字，用第三种颜色区分 */
+.goal-mode-badge {
+  display: inline-block;
+  margin-bottom: 4px;
+  margin-right: 4px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
   cursor: help;
 }
 
@@ -1210,6 +1384,299 @@ h1, h2, h3, h4, h5, h6, .header-title, .stat-value, .stat-title, .section-title,
 
 .link-dialog-close:hover {
   background: var(--gray-100, #f3f4f6);
+}
+
+/* 价目表弹窗：列数比链接弹窗多，需要比 .link-dialog 的 420px 宽一些 */
+.pricing-dialog {
+  max-width: 560px;
+}
+
+.pricing-as-of {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: var(--gray-500, #6b7280);
+}
+
+/* 小屏幕下表格本身横向滚动，不让弹窗撑破页面宽度 */
+.pricing-table-wrapper {
+  overflow-x: auto;
+  margin: 4px 0 10px;
+  border: 1px solid var(--gray-200, #e5e7eb);
+  border-radius: 10px;
+}
+
+.pricing-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.pricing-table th, .pricing-table td {
+  padding: 7px 10px;
+  text-align: right;
+  border-bottom: 1px solid var(--gray-100, #f3f4f6);
+}
+
+.pricing-table th:first-child, .pricing-table td:first-child {
+  text-align: left;
+}
+
+.pricing-table thead th {
+  background: var(--gray-50, #f9fafb);
+  color: var(--gray-500, #6b7280);
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.pricing-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.pricing-model-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--gray-700, #374151);
+}
+
+/* 省 token 技巧弹窗：条目比价目表多得多，440px 宽刚好放下一行标题，
+   内容高度会超出视口，弹窗本身要能滚动而不是把页面撑破。 */
+.token-tips-dialog {
+  max-width: 440px;
+  max-height: min(640px, 84vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 16px;
+}
+
+.token-tips-dialog .link-dialog-title {
+  flex-shrink: 0;
+}
+
+.token-tips-dialog .link-dialog-hint,
+.token-tips-dialog .link-dialog-close {
+  flex-shrink: 0;
+}
+
+/* 额度换算：常显的高亮块，不折叠、不参与编号，专门用来让用户第一眼就看到 */
+.token-tip-highlight {
+  flex-shrink: 0;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  border-left: 3px solid var(--indigo-600, #6366f1);
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.token-tip-highlight-title {
+  margin-bottom: 4px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--gray-900, #111827);
+}
+
+.token-tip-highlight-body {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--gray-700, #374151);
+}
+
+.token-tips-body {
+  overflow-y: auto;
+  padding-right: 4px;
+  margin-bottom: 4px;
+}
+
+/* 每条建议是一个 <details>：标题（建议本身）常显，解释默认折叠在里面。 */
+.token-tip {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--gray-100, #f3f4f6);
+}
+
+.token-tip:first-child {
+  padding-top: 0;
+}
+
+.token-tip:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.token-tip-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--gray-800, #1f2937);
+}
+
+.token-tip-title::-webkit-details-marker {
+  display: none;
+}
+
+.token-tip-title-text {
+  flex: 1;
+}
+
+.token-tip-index {
+  color: var(--gray-400, #9ca3af);
+  font-weight: 500;
+}
+
+/* 自己画一个折叠箭头，收起时指向右，展开后转成指向下 */
+.token-tip-title::after {
+  content: '';
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-right: 1.5px solid var(--gray-400, #9ca3af);
+  border-bottom: 1.5px solid var(--gray-400, #9ca3af);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.token-tip[open] .token-tip-title::after {
+  transform: rotate(45deg);
+  margin-top: 2px;
+}
+
+.token-tip-body {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.65;
+  color: var(--gray-600, #4b5563);
+}
+
+/* 原始日志已删除：统计照留，但要让人知道这条已经没有源文件可追溯 */
+.source-deleted-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.1);
+  color: #b45309;
+  font-size: 0.68rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* 子 agent 的调用：开销算回派出它的提问，明细里单独标出来 */
+.subagent-badge {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: rgba(20, 184, 166, 0.12);
+  color: #0f766e;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: help;
+}
+
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* 移除按钮平时低调，悬停才变红，不和下钻按钮抢视线 */
+.row-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gray-400, #9ca3af);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.row-remove-btn:hover {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+
+.row-remove-btn:focus-visible {
+  outline: 2px solid #dc2626;
+  outline-offset: 2px;
+}
+
+.remove-dialog-target {
+  display: -webkit-box;
+  margin: 0 0 4px;
+  overflow: hidden;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--gray-800, #1f2937);
+  word-break: break-word;
+}
+
+.remove-dialog-meta {
+  margin: 0 0 12px;
+  font-size: 0.78rem;
+  color: var(--gray-500, #6b7280);
+  font-variant-numeric: tabular-nums;
+}
+
+.remove-dialog-error {
+  margin: 0 0 12px;
+  font-size: 0.78rem;
+  color: #dc2626;
+}
+
+.remove-dialog-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.remove-dialog-actions .link-dialog-close {
+  flex: 1;
+}
+
+.remove-dialog-confirm {
+  flex: 1;
+  padding: 9px 0;
+  border: 1px solid #dc2626;
+  border-radius: 8px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.remove-dialog-confirm:hover {
+  background: #b91c1c;
+}
+
+.remove-dialog-confirm:disabled,
+.remove-dialog-actions .link-dialog-close:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /*

@@ -12,62 +12,151 @@
  */
 import fs from 'fs';
 import path from 'path';
-import readline from 'readline';
 import { refreshUsage, getProjectsDir, readTurnsShard, DEDUP_SCOPE } from '../app/lib/parser-node.js';
 import { extractTokens, calculateCost } from '../app/lib/pricing.js';
 
 const money = (n) => '$' + n.toFixed(2);
 const eq = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
 
-/** 独立重算：直接扫日志，只用 pricing 模块，不碰 parser 的聚合逻辑。 */
-async function independentTotals() {
+/**
+ * 手动按字节 `\n` 分行，不用 Node 的 readline —— readline 会把 U+2028/U+2029
+ * （行分隔符/段分隔符）也当作换行拆开，转录里粘贴的网页内容偶尔会带这类字符，
+ * 一旦被拆开就切碎了一整条合法 JSON。这个函数存在的唯一目的就是拿一套独立实现
+ * 去验证 io-node.js 生产路径算出来的数字对不对——如果它自己也用同一个有问题的
+ * readline，就会在同一行上踩同一个坑，两边"错得一样"反而显示对账通过，
+ * 彻底失去查错能力。必须和生产路径用完全一致的切分逻辑。
+ */
+async function* readLinesRaw(filePath) {
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  let carry = '';
+  for await (const chunk of stream) {
+    carry += chunk;
+    let idx;
+    while ((idx = carry.indexOf('\n')) !== -1) {
+      yield carry.slice(0, idx);
+      carry = carry.slice(idx + 1);
+    }
+  }
+  if (carry) yield carry;
+}
+
+/**
+ * 独立重算：直接扫日志，只用 pricing 模块，不碰 parser 的聚合逻辑。
+ *
+ * 只有原始日志已删除的会话没法单靠日志得到，只能读缓存里剩下的分片，其余全部独立计算。
+ */
+async function independentTotals(cache) {
   const dir = getProjectsDir();
   const seen = new Map();
-  let files = 0;
 
+  for (const s of Object.values(cache.sessions)) {
+    if (!s.sourceDeleted) continue;
+    for (const t of await readTurnsShard(s.sessionId)) {
+      if (t.dedupKey) seen.set(t.dedupKey, { totalTokens: t.totalTokens, cost: t.cost });
+    }
+  }
+
+  // 主日志 <project>/<id>.jsonl，外加子 agent 日志 <project>/<id>/subagents/*.jsonl。
+  const logFiles = [];
   for (const folder of fs.readdirSync(dir, { withFileTypes: true })) {
     if (!folder.isDirectory() || folder.name.startsWith('.')) continue;
-    for (const name of fs.readdirSync(path.join(dir, folder.name))) {
-      if (!name.endsWith('.jsonl')) continue;
-      files++;
-      const filePath = path.join(dir, folder.name, name);
-      const fileSessionId = name.slice(0, -6);
-      const rl = readline.createInterface({
-        input: fs.createReadStream(filePath, { encoding: 'utf8' }),
-        crlfDelay: Infinity,
-      });
-      for await (const line of rl) {
-        if (!line.trim()) continue;
-        let e;
-        try { e = JSON.parse(line); } catch { continue; }
-        if (e.type !== 'assistant') continue;
-        const usage = e.message && e.message.usage;
-        if (!usage) continue;
-        const model = e.message.model || 'claude-sonnet-5';
-        if (model === '<synthetic>') continue;
-        const msgId = e.message.id;
-        if (!msgId) continue;
-
-        const key = DEDUP_SCOPE === 'global'
-          ? msgId + ' ' + (e.requestId || '')
-          : msgId + ' ' + (e.requestId || '') + ' ' + (e.sessionId || fileSessionId);
-
-        const tokens = extractTokens(usage);
-        const prev = seen.get(key);
-        // 与 parser 一致：同键冲突保留 token 更大的那条。
-        if (prev && prev.totalTokens >= tokens.totalTokens) continue;
-        seen.set(key, {
-          totalTokens: tokens.totalTokens,
-          cost: calculateCost(tokens, model, { speed: usage.speed }),
-        });
+    const projPath = path.join(dir, folder.name);
+    for (const ent of fs.readdirSync(projPath, { withFileTypes: true })) {
+      if (ent.isDirectory()) {
+        const subDir = path.join(projPath, ent.name, 'subagents');
+        if (!fs.existsSync(subDir)) continue;
+        for (const f of fs.readdirSync(subDir)) {
+          if (f.endsWith('.jsonl')) logFiles.push({ filePath: path.join(subDir, f), fileSessionId: ent.name });
+        }
+      } else if (ent.name.endsWith('.jsonl')) {
+        logFiles.push({ filePath: path.join(projPath, ent.name), fileSessionId: ent.name.slice(0, -6) });
       }
+    }
+  }
+
+  for (const { filePath, fileSessionId } of logFiles) {
+    for await (const line of readLinesRaw(filePath)) {
+      if (!line.trim()) continue;
+      let e;
+      try { e = JSON.parse(line); } catch { continue; }
+      if (e.type !== 'assistant') continue;
+      const usage = e.message && e.message.usage;
+      if (!usage) continue;
+      const model = e.message.model || 'claude-sonnet-5';
+      if (model === '<synthetic>') continue;
+      const msgId = e.message.id;
+      if (!msgId) continue;
+
+      const key = DEDUP_SCOPE === 'global'
+        ? msgId + ' ' + (e.requestId || '')
+        : msgId + ' ' + (e.requestId || '') + ' ' + (e.sessionId || fileSessionId);
+
+      const tokens = extractTokens(usage);
+      const prev = seen.get(key);
+      // 与 parser 一致：同键冲突保留 token 更大的那条。
+      if (prev && prev.totalTokens >= tokens.totalTokens) continue;
+      seen.set(key, {
+        totalTokens: tokens.totalTokens,
+        cost: calculateCost(tokens, model, { speed: usage.speed }),
+      });
     }
   }
 
   let tokens = 0;
   let cost = 0;
   for (const v of seen.values()) { tokens += v.totalTokens; cost += v.cost; }
-  return { files, turns: seen.size, tokens, cost };
+  return { files: logFiles.length, turns: seen.size, tokens, cost };
+}
+
+/**
+ * 分叉、编辑重发会把历史原样复制进一个新会话文件，同一个请求因此出现在多个主日志里。
+ * 它应该记在「文件里第一条时间戳最早」的会话名下；token 更大的副本优先（占位副本的 usage 全是 0）。
+ * 原始日志已删除的会话没有文件可比，不参与。
+ */
+async function sharedHistoryOwnership(cache) {
+  const dir = getProjectsDir();
+  const byKey = new Map();
+  for (const folder of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!folder.isDirectory() || folder.name.startsWith('.')) continue;
+    const projPath = path.join(dir, folder.name);
+    for (const ent of fs.readdirSync(projPath, { withFileTypes: true })) {
+      if (!ent.isFile() || !ent.name.endsWith('.jsonl')) continue;
+      const filePath = path.join(projPath, ent.name);
+      const file = { filePath, sessionId: ent.name.slice(0, -6), startedAt: null };
+      for await (const line of readLinesRaw(filePath)) {
+        if (!line.trim()) continue;
+        let e;
+        try { e = JSON.parse(line); } catch { continue; }
+        if (!file.startedAt && e.timestamp) file.startedAt = e.timestamp;
+        const usage = e.type === 'assistant' && e.message && e.message.usage;
+        if (!usage || !e.message.id || e.message.model === '<synthetic>') continue;
+        const key = e.message.id + ' ' + (e.requestId || '');
+        if (!byKey.has(key)) byKey.set(key, new Map());
+        const copies = byKey.get(key);
+        const tokens = extractTokens(usage).totalTokens;
+        if (!copies.has(file) || copies.get(file) < tokens) copies.set(file, tokens);
+      }
+    }
+  }
+
+  const owner = new Map();
+  for (const s of Object.values(cache.sessions)) {
+    for (const t of await readTurnsShard(s.sessionId)) if (t.dedupKey) owner.set(t.dedupKey, s);
+  }
+  const order = (f) => [f.startedAt || '￿', f.filePath];
+  let shared = 0;
+  let wrong = 0;
+  for (const [key, copies] of byKey) {
+    if (copies.size < 2) continue;
+    const actual = owner.get(key);
+    if (!actual || actual.sourceDeleted) continue;
+    shared++;
+    const max = Math.max(...copies.values());
+    const expected = [...copies].filter(([, t]) => t === max).map(([f]) => f)
+      .sort((a, b) => (order(a) < order(b) ? -1 : 1))[0];
+    if (expected.sessionId !== actual.sessionId) wrong++;
+  }
+  return { shared, wrong };
 }
 
 const failures = [];
@@ -83,7 +172,7 @@ console.log(`  ${cache.stats.filesParsed} 个文件, ${cache.stats.linesParsed.t
   + `剔除重复 ${cache.stats.duplicatesDropped.toLocaleString()} 条, 耗时 ${cache.stats.durationMs}ms\n`);
 
 console.log('独立重算对账...');
-const ind = await independentTotals();
+const ind = await independentTotals(cache);
 const before = cache.summary;
 
 /**
@@ -153,6 +242,10 @@ check('无重复 dedupKey', await (async () => {
   }
   return true;
 })());
+if (DEDUP_SCOPE === 'global') {
+  const own = await sharedHistoryOwnership(cache);
+  check('共享历史记在原会话名下', own.wrong === 0, `${own.shared} 个共享请求，记错 ${own.wrong} 个`);
+}
 check('解析无丢行', cache.stats.linesSkipped === 0, `跳过 ${cache.stats.linesSkipped} 行`);
 check('所有模型有精确价格', cache.summary.estimatedPricing === false);
 

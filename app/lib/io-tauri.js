@@ -45,12 +45,13 @@ export const tauriIO = {
    *
    * Rust 保证每一块都在换行处切断，所以这里不需要跨块拼接残行；
    * 只有文件最后一行可能没有结尾换行，单独处理。
+   * chunkBytes 只在「读几行就停」时调小，免得为了文件头搬一整块 4MB。
    */
-  async *readLines(filePath, startOffset) {
+  async *readLines(filePath, startOffset, chunkBytes = CHUNK_BYTES) {
     assertDesktop();
     let offset = startOffset;
     for (;;) {
-      const chunk = await invoke('read_log_chunk', { path: filePath, offset, limit: CHUNK_BYTES });
+      const chunk = await invoke('read_log_chunk', { path: filePath, offset, limit: chunkBytes });
       if (chunk.text) {
         const lines = chunk.text.split('\n');
         const tail = lines.pop();

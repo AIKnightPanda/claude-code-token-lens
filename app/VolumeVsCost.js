@@ -142,7 +142,10 @@ export default function VolumeVsCost({ totals, t, locale }) {
               <td>
                 <span className="vvc-swatch" style={{ background: r.color }} />
                 {r.label}
-                {r.key === 'cacheWrite' && totals.cacheWriteTokens > 0 && (
+                {/* 1h 缓存档是 Claude 特有的概念，Codex 的用量里没有这个字段——
+                    按 cacheWrite1h 是否真的有值来判断，而不是按 cacheWriteTokens，
+                    否则 Codex 这边会拿 undefined 算出一个 NaN%。 */}
+                {r.key === 'cacheWrite' && totals.cacheWrite1h > 0 && (
                   <span className="vvc-sub">
                     {t.ofWhich1h} {((totals.cacheWrite1h / totals.cacheWriteTokens) * 100).toFixed(0)}%
                   </span>

@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-token-lens"
-version = "1.0.0"
+version = "1.1.0"
 description = "Local-first token usage & cost dashboard for Claude Code"
 authors = ["AIKnightPanda"]
 license = "MIT"

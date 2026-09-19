@@ -8,12 +8,12 @@ import {
 import {
   Activity, DollarSign, Cpu, Calendar, AlertCircle, TerminalSquare, RefreshCw,
   FolderOpen, MessageSquare, BarChart3, ChevronRight, ChevronUp, ChevronDown, Check,
-  ChevronsUpDown, AlignLeft, ArrowLeft, X, Globe, Info, ExternalLink
+  ChevronsUpDown, AlignLeft, ArrowLeft, X, Globe, Info, ExternalLink, Trash2, Receipt, Lightbulb
 } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { i18n } from './i18n';
 import VolumeVsCost from './VolumeVsCost';
-import { readCache, refreshUsage, getTurnsForConversation } from './lib/parser-tauri';
+import { PROVIDERS, PROVIDER_ORDER, DEFAULT_PROVIDER } from './lib/providers';
 
 const PROJECT_URL = 'https://github.com/AIKnightPanda/claude-code-token-lens';
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '';
@@ -37,7 +37,7 @@ function toPayload(cache) {
     summary: cache.summary,
     projects: cache.projects,
     daily: cache.daily,
-    sessions: Object.values(cache.sessions),
+    sessions: Object.values(cache.sessions).filter((s) => !s.attachedTo),
     conversations: Object.values(cache.conversations),
     stats: cache.stats,
   };
@@ -88,6 +88,21 @@ const fmtDayLabel = (day, locale) => {
 
 const fmtNum = (n) => (n || 0).toLocaleString();
 const fmtCost = (n, digits = 4) => `$${(n || 0).toFixed(digits)}`;
+const fmtQuotaPct = (n) => (n < 1 ? '<1%' : `≈${Math.round(n)}%`);
+const fmtQuotaLeft = (used) => (used == null ? '—' : `${Math.min(Math.max(100 - used, 0), 100)}%`);
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+/**
+ * 展示用的会话短 ID。Claude Code 的 sessionId 本身就是纯 UUID，首段已经够用。
+ * Codex 的 sessionId 是整个 rollout 文件名（rollout-2026-09-11T00-09-42-<uuid>），
+ * 直接切片/按 "-" 分段拿到的全是 "rollout"，所有会话显示出来一个样——
+ * 改成从字符串里找那段真正的 UUID，再取它的首段。
+ */
+const shortSessionId = (sessionId) => {
+  const id = String(sessionId || '');
+  const match = id.match(UUID_RE);
+  return (match ? match[0] : id).slice(0, 8);
+};
 
 /**
  * 统计块的紧凑写法：2,400,580,317 → 2.4B / 24亿。
@@ -308,6 +323,127 @@ const ProjectLinkDialog = ({ copied, t, onClose }) => (
 );
 
 /**
+ * 删除缓存记录前的确认框。
+ *
+ * 只有原始日志已经不在的记录才有这个操作，删了就彻底找不回来，
+ * 所以把对象、金额和后果都摆出来再让人点。
+ */
+const RemoveDialog = ({ target, t, busy, error, onCancel, onConfirm }) => {
+  const title = target.kind === 'session' ? t.removeSessionTitle : t.removeConversationTitle;
+  return (
+    <div className="link-dialog-backdrop" onClick={busy ? undefined : onCancel}>
+      <div className="link-dialog" role="alertdialog" aria-modal="true"
+        aria-label={title} onClick={(e) => e.stopPropagation()}>
+        <h3 className="link-dialog-title"><Trash2 size={18} />{title}</h3>
+        <p className="remove-dialog-target">{target.label}</p>
+        <p className="remove-dialog-meta">{fmtCost(target.cost)} · {fmtNum(target.tokens)} tokens</p>
+        <p className="link-dialog-body">{t.removeBody}</p>
+        {target.sharedHistory && <p className="link-dialog-body">{t.removeSharedHistory}</p>}
+        {error && <p className="remove-dialog-error">{t.removeFailed}: {error}</p>}
+        <div className="remove-dialog-actions">
+          <button type="button" className="link-dialog-close" onClick={onCancel} disabled={busy}>{t.cancel}</button>
+          <button type="button" className="remove-dialog-confirm" onClick={onConfirm} disabled={busy}>
+            {busy ? t.removing : t.removeConfirm}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/** 价目表弹窗里每一列对应的文案 key——哪个 provider 展示哪些列由 provider.pricingColumns 决定。 */
+const PRICING_COLUMN_LABEL_KEYS = {
+  input: 'pricingInput',
+  output: 'pricingOutput',
+  cacheWrite5m: 'pricingCacheWrite5m',
+  cacheWrite1h: 'pricingCacheWrite1h',
+  cacheWrite: 'pricingCacheWrite',
+  cacheRead: 'pricingCacheRead',
+};
+
+/**
+ * 价目表详情：当前成本到底是怎么算出来的，在这之前整个应用里没有地方能看到。
+ * 两个 provider 共用同一个组件，展示哪些列（Claude 的缓存写入拆成 5m/1h 两档，
+ * Codex 只有一档）由 provider.pricingColumns 决定，不用各写一份表格。
+ */
+const PricingDialog = ({ provider, t, onClose }) => (
+  <div className="link-dialog-backdrop" onClick={onClose}>
+    <div className="link-dialog pricing-dialog" role="dialog" aria-modal="true"
+      aria-label={t.pricingTitle} onClick={(e) => e.stopPropagation()}>
+      <h3 className="link-dialog-title"><Receipt size={18} />{provider.label} {t.pricingTitle}</h3>
+      <p className="link-dialog-body">
+        {t.pricingBody}
+        <br />
+        <span className="pricing-as-of">{t.pricingAsOf} {provider.pricingAsOf}</span>
+      </p>
+      <div className="pricing-table-wrapper">
+        <table className="pricing-table">
+          <thead>
+            <tr>
+              <th>{t.pricingModel}</th>
+              {provider.pricingColumns.map((col) => (
+                <th key={col} className="text-right">{t[PRICING_COLUMN_LABEL_KEYS[col]]}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {provider.pricingTable.map((row) => (
+              <tr key={row.model}>
+                <td className="pricing-model-cell">{row.model}</td>
+                {provider.pricingColumns.map((col) => (
+                  <td key={col} className="text-right">{fmtCost(row[col], 2)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="link-dialog-hint">{t.pricingUnit}</p>
+      <button type="button" className="link-dialog-close" onClick={onClose}>{t.dismiss}</button>
+    </div>
+  </div>
+);
+
+/**
+ * 省 token 小技巧：和价目表挂在同一排按钮上，但内容按 provider 分开维护
+ * （两边机制相通，数字和细节不一样，套模板硬塞变量反而不准），
+ * 见 lib/token-tips.js。同一份内容还要分中英文，所以还得按 lang 取一次。
+ */
+const TokenTipsDialog = ({ provider, t, lang, onClose }) => {
+  const { highlight, tips } = provider.tokenTips[lang] || provider.tokenTips.en;
+  return (
+    <div className="link-dialog-backdrop" onClick={onClose}>
+      <div className="link-dialog token-tips-dialog" role="dialog" aria-modal="true"
+        aria-label={t.tokenTipsTitle} onClick={(e) => e.stopPropagation()}>
+        <h3 className="link-dialog-title"><Lightbulb size={18} />{provider.label} {t.tokenTipsTitle}</h3>
+        {/* 额度换算是心理模型，不是可执行的动作，单独用高亮块常显在最上面，
+            不参与下面的编号、也不折叠，避免被列表埋没。 */}
+        <div className="token-tip-highlight">
+          <div className="token-tip-highlight-title">{highlight.title}</div>
+          <p className="token-tip-highlight-body">{highlight.body}</p>
+        </div>
+        {/* 不分类，直接列出每条建议并编号：标题就是明确的行动建议本身，一眼能
+            扫完有几条；解释放进 <details> 默认收起，想深入了解哪条自己展开。 */}
+        <div className="token-tips-body">
+          {tips.map((tip, i) => (
+            <details key={tip.title} className="token-tip">
+              <summary className="token-tip-title">
+                <span className="token-tip-title-text">
+                  <span className="token-tip-index">{i + 1}.</span> {tip.title}
+                </span>
+              </summary>
+              <p className="token-tip-body">{tip.body}</p>
+            </details>
+          ))}
+        </div>
+        <p className="link-dialog-hint">{t.tokenTipsHint}</p>
+        <button type="button" className="link-dialog-close" onClick={onClose}>{t.dismiss}</button>
+      </div>
+    </div>
+  );
+};
+
+/**
  * 语言偏好存在 localStorage 里，属于 React 之外的状态源，
  * 用 useSyncExternalStore 订阅：服务端快照固定为 'en'，客户端读实际值，
  * React 会在 hydration 后正确切换，不会出现「先英文再跳中文」的闪烁，
@@ -344,6 +480,42 @@ function setStoredLang(next) {
     /* 同上，存不进去也不影响本次会话 */
   }
   langListeners.forEach((cb) => cb());
+}
+
+/**
+ * 当前查看的数据源（Claude Code / Codex），同样存在 localStorage 里，
+ * 用同一套 useSyncExternalStore 模式避免 hydration 闪烁。
+ */
+const PROVIDER_KEY = 'ccusage-provider';
+const providerListeners = new Set();
+
+function subscribeProvider(cb) {
+  providerListeners.add(cb);
+  window.addEventListener('storage', cb);
+  return () => {
+    providerListeners.delete(cb);
+    window.removeEventListener('storage', cb);
+  };
+}
+
+function getProviderSnapshot() {
+  try {
+    const saved = localStorage.getItem(PROVIDER_KEY);
+    return PROVIDERS[saved] ? saved : DEFAULT_PROVIDER;
+  } catch {
+    return DEFAULT_PROVIDER;
+  }
+}
+
+const getProviderServerSnapshot = () => DEFAULT_PROVIDER;
+
+function setStoredProvider(next) {
+  try {
+    localStorage.setItem(PROVIDER_KEY, next);
+  } catch {
+    /* 隐私模式下存不进去，本次会话内仍然生效 */
+  }
+  providerListeners.forEach((cb) => cb());
 }
 
 /**
@@ -384,6 +556,28 @@ function setCostNoteVisible(visible) {
   costNoteListeners.forEach((cb) => cb());
 }
 
+/**
+ * 顶部数据源切换开关：Claude Code / Codex 各自的数据、缓存、Rust 命令
+ * 全部独立，这里切换只是换一套 provider 传给 UsageDashboard，
+ * 靠 key 强制重新挂载，两边状态不会串。
+ */
+const ProviderSwitch = ({ activeKey, onChange, t }) => (
+  <div className="provider-switch" role="tablist" aria-label={t.dataSource}>
+    {PROVIDER_ORDER.map((key) => (
+      <button
+        key={key}
+        type="button"
+        role="tab"
+        aria-selected={activeKey === key}
+        className={`provider-switch-btn ${activeKey === key ? 'active' : ''}`}
+        onClick={() => onChange(key)}
+      >
+        {PROVIDERS[key].label}
+      </button>
+    ))}
+  </div>
+);
+
 const ModelTags = ({ models }) => (
   <div className="model-tags-wrapper">
     {(models || []).map((m) => (
@@ -392,12 +586,17 @@ const ModelTags = ({ models }) => (
   </div>
 );
 
-export default function Dashboard() {
-  const lang = useSyncExternalStore(subscribeLang, getLangSnapshot, getLangServerSnapshot);
-  const t = i18n[lang];
-  const locale = lang === 'zh' ? 'zh-CN' : 'en-US';
-
-  const toggleLang = () => setStoredLang(lang === 'en' ? 'zh' : 'en');
+/**
+ * 单个数据源的看板主体。provider 提供 readCache/refreshUsage/getTurnsForConversation
+ * 三个函数，UI 逻辑对两边一视同仁 —— 概念已经在各自的 parser 里对齐好了。
+ *
+ * 标题栏（语言/时间范围/刷新）和数据源切换条是全应用共享的一份，活在外层的
+ * Page 组件里；这里只管一个数据源自己的下钻状态和表格渲染。data/loading/error
+ * 也由 Page 统一拉取并作为 props 传入，这样"刷新"天然会同时刷新两边，时间范围/
+ * 语言这些设置也天然共享，不会因为切换数据源而重置或各算各的。
+ */
+function UsageDashboard({ provider, data, loading, error, t, locale, dateRange, onDataChange }) {
+  const lang = locale === 'zh-CN' ? 'zh' : 'en';
 
   const costNoteVisible = useSyncExternalStore(
     subscribeCostNote, getCostNoteSnapshot, getCostNoteServerSnapshot
@@ -405,33 +604,9 @@ export default function Dashboard() {
   const dismissCostNote = () => setCostNoteVisible(false);
   const showCostNote = () => setCostNoteVisible(true);
 
-  // 唤不起浏览器时弹的说明框。null 表示不显示，copied 记录地址有没有进剪贴板。
-  const [linkDialog, setLinkDialog] = useState(null);
+  const [pricingDialogOpen, setPricingDialogOpen] = useState(false);
+  const [tokenTipsDialogOpen, setTokenTipsDialogOpen] = useState(false);
 
-  /** 桌面端的 WebView 会拦掉 window.open，外链只能交给系统浏览器。 */
-  const openProjectPage = useCallback(async () => {
-    try {
-      await openUrl(PROJECT_URL);
-      return;
-    } catch {
-      // 浏览器里跑 next dev 时没有 Tauri，退回普通新开标签页。
-      if (typeof window !== 'undefined' && window.open(PROJECT_URL, '_blank', 'noopener')) return;
-    }
-    // 两条路都不通就把地址交到用户手上，别让这次点击无声无息地消失。
-    let copied = false;
-    try {
-      await navigator.clipboard.writeText(PROJECT_URL);
-      copied = true;
-    } catch {
-      copied = false;
-    }
-    setLinkDialog({ copied });
-  }, []);
-
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('daily');
 
   // 下钻筛选条件。这些条件是**可叠加**的：同时挂着项目和日期时两者都要生效，
@@ -447,63 +622,65 @@ export default function Dashboard() {
    */
   const [turnsTarget, setTurnsTarget] = useState(null);
   const [selectedDate, setSelectedDate] = useState(null);
-  const [dateRange, setDateRange] = useState('all');
 
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [visibleRows, setVisibleRows] = useState(PAGE_SIZE);
+
+  // 时间范围现在是全应用共享的一份状态（见 Page），这里只负责在它变化时
+  // 把自己的分页重置掉，和原来下拉框 onChange 里做的事一致。在渲染期间比较
+  // 而不是用 effect：这是 React 推荐的"按 prop 变化调整 state"写法，
+  // 避免在 effect 里同步 setState 引发多一轮级联渲染。
+  const [prevDateRange, setPrevDateRange] = useState(dateRange);
+  if (dateRange !== prevDateRange) {
+    setPrevDateRange(dateRange);
+    setVisibleRows(PAGE_SIZE);
+  }
 
   // turn 明细按 {查询键 -> 行} 缓存，避免用 setState(null) 去重置，
   // 也让切回同一条对话时不必重新请求。
   const [turnsCache, setTurnsCache] = useState({ key: null, rows: [] });
 
-  const fetchData = useCallback(async (forceRefresh = false) => {
-    try {
-      let cacheData;
-      if (forceRefresh) {
-        cacheData = await refreshUsage({ force: forceRefresh });
-      } else {
-        const { cache, rebuildReason } = await readCache();
-        if (rebuildReason) {
-          cacheData = await refreshUsage({ force: true });
-        } else {
-          cacheData = cache;
-        }
-      }
-      setData(toPayload(cacheData));
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+  // 待确认的移除对象；null 表示不弹框。数据源不支持移除时不显示移除按钮。
+  const [removeTarget, setRemoveTarget] = useState(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState(null);
+  const canRemove = typeof provider.removeFromStats === 'function';
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    fetchData(true);
+  /**
+   * 这个会话的历史是否被 resume 复制进了日志仍在的会话。是的话，删除后那部分会改算到
+   * 那个会话名下，总额减少得会比这一行少 —— 提前在确认框里说清楚。
+   */
+  const historyLivesOn = (sessionId) => (data?.sessions || []).some(
+    (s) => !s.sourceDeleted && (s.inheritedFrom || []).includes(sessionId)
+  );
+
+  const askRemove = (target) => {
+    setRemoveError(null);
+    setRemoveTarget(target);
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { cache, rebuildReason } = await readCache();
-        if (cancelled) return;
-        if (rebuildReason) {
-          const freshData = await refreshUsage({ force: true });
-          if (!cancelled) setData(toPayload(freshData));
-        } else {
-          setData(toPayload(cache));
-        }
-      } catch (err) {
-        if (!cancelled) setError(err.message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+  const cancelRemove = () => {
+    if (!removing) setRemoveTarget(null);
+  };
+
+  const confirmRemove = async () => {
+    if (!removeTarget || removing) return;
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      const next = await provider.removeFromStats(
+        removeTarget.kind === 'session' ? { sessionId: removeTarget.id } : { conversationId: removeTarget.id }
+      );
+      // 被移除的会话要是正挂在筛选上，筛选一起清掉，否则列表会停在一个已经不存在的会话上。
+      if (removeTarget.kind === 'session' && selectedSession === removeTarget.id) setSelectedSession(null);
+      onDataChange(toPayload(next));
+      setRemoveTarget(null);
+    } catch (err) {
+      setRemoveError(err && err.message ? err.message : String(err));
+    } finally {
+      setRemoving(false);
+    }
+  };
 
   /** 当前 turns 查询键；为 null 表示这一屏不需要 turn 明细。 */
   const turnsKey = useMemo(() => {
@@ -518,14 +695,14 @@ export default function Dashboard() {
     let cancelled = false;
     (async () => {
       try {
-        const turns = await getTurnsForConversation(turnsTarget.id);
+        const turns = await provider.getTurnsForConversation(turnsTarget.id);
         if (!cancelled) setTurnsCache({ key: turnsKey, rows: turns || [] });
       } catch {
         if (!cancelled) setTurnsCache({ key: turnsKey, rows: [] });
       }
     })();
     return () => { cancelled = true; };
-  }, [turnsKey, turnsTarget]);
+  }, [turnsKey, turnsTarget, provider]);
 
   const turns = turnsCache.key === turnsKey ? turnsCache.rows : null;
   const turnsLoading = !!turnsKey && turns === null;
@@ -670,11 +847,29 @@ export default function Dashboard() {
   }, [data, selectedProject, selectedSession, selectedDate, rangeFloor, sortRows, localDay]);
 
   const sortedTurns = useMemo(() => sortRows(turns || []), [turns, sortRows]);
+  // 额度读数只有 Codex 订阅套餐的日志才有，没有的话整列不出现。
+  const showQuotaCol = sortedTurns.some((r) => r.quotaPct != null);
+  const turnsColSpan = showQuotaCol ? 9 : 8;
 
-  const projectNameOf = useCallback(
-    (key) => (data?.projects || []).find((p) => p.projectKey === key)?.projectName || key,
-    [data]
+  /**
+   * Codex 有一批对话没打开过具体目录（home 目录下，或桌面版自己建的临时工作区），
+   * cwd 的最后一段是没有意义的随机短名，不能直接当项目名展示——统一显示成
+   * "未分类"，而不是让用户看到一堆自己从没见过、在 Codex 里也找不到的项目。
+   * provider.unassignedProjectKey 对 Claude Code 是 undefined，下面的比较天然不命中。
+   */
+  const isUnassignedProject = useCallback(
+    (key) => !!provider.unassignedProjectKey && key === provider.unassignedProjectKey,
+    [provider]
   );
+  const displayProjectName = useCallback(
+    (row) => (isUnassignedProject(row.projectKey) ? t.unassignedProject : row.projectName),
+    [isUnassignedProject, t]
+  );
+
+  const projectNameOf = useCallback((key) => {
+    if (isUnassignedProject(key)) return t.unassignedProject;
+    return (data?.projects || []).find((p) => p.projectKey === key)?.projectName || key;
+  }, [data, isUnassignedProject, t]);
 
   const SortHeader = ({ label, sortKey, align, width }) => {
     const active = sortConfig.key === sortKey;
@@ -726,7 +921,7 @@ export default function Dashboard() {
       bubbles.push({ k: 'p', label: `${t.project}: ${projectNameOf(selectedProject)}`, clear: () => setSelectedProject(null) });
     }
     if (selectedSession) {
-      bubbles.push({ k: 's', label: `${t.session}: ${selectedSession.slice(0, 8)}`, clear: () => setSelectedSession(null) });
+      bubbles.push({ k: 's', label: `${t.session}: ${shortSessionId(selectedSession)}`, clear: () => setSelectedSession(null) });
     }
     if (selectedDate) {
       bubbles.push({ k: 'd', label: `${t.date}: ${selectedDate}`, clear: () => setSelectedDate(null) });
@@ -759,22 +954,14 @@ export default function Dashboard() {
   }
 
   if (error) {
+    // 「去哪儿反馈」的入口现在是标题栏里那个一直显示的 GitHub 按钮（见 Page），
+    // 不用在这里再挂一份——以前它是出错时唯一还能点的东西，现在标题栏任何时候都在。
     return (
       <div className="center-container">
         <div className="error-card">
           <AlertCircle size={24} />
           <div><h3>{t.errorLoading}</h3><p>{error}</p></div>
         </div>
-        {/* 出错时最想找的就是「去哪儿反馈」，这里也放一个入口。 */}
-        <button type="button" className="app-footer-link" style={{ marginTop: '18px' }}
-          onClick={openProjectPage} title={PROJECT_URL}>
-          <GithubIcon size={15} />
-          {t.viewOnGithub}
-          <ExternalLink size={13} />
-        </button>
-        {linkDialog && (
-          <ProjectLinkDialog copied={linkDialog.copied} t={t} onClose={() => setLinkDialog(null)} />
-        )}
       </div>
     );
   }
@@ -865,8 +1052,9 @@ export default function Dashboard() {
               {sortedProjects.slice(0, visibleRows).map((row) => (
                 <tr key={row.projectKey}>
                   <td>
-                    <div className="font-semibold text-gray-800" style={{ wordBreak: 'break-all' }} title={row.projectKey}>
-                      {row.projectName}
+                    <div className="font-semibold text-gray-800" style={{ wordBreak: 'break-all' }}
+                      title={isUnassignedProject(row.projectKey) ? t.unassignedProjectTip : row.projectKey}>
+                      {displayProjectName(row)}
                     </div>
                   </td>
                   <td className="ts-cell text-gray-500 font-medium text-xs">{fmtDateOnly(row.firstActivity)}</td>
@@ -915,7 +1103,7 @@ export default function Dashboard() {
               <SortHeader label={t.turnsCount} sortKey="turnCount" width="70px" align="center" />
               <SortHeader label={t.totalTokens} sortKey="totalTokens" width="100px" align="right" />
               <SortHeader label={t.cost} sortKey="cost" width="90px" align="right" />
-              <th style={{ width: '90px' }} className="text-right">{t.action}</th>
+              <th style={{ width: canRemove ? '128px' : '90px' }} className="text-right">{t.action}</th>
             </tr>
           </thead>
           <tbody>
@@ -924,8 +1112,9 @@ export default function Dashboard() {
                 <td className="ts-cell font-medium">{fmtDate(row.date)}</td>
                 {!selectedProject && (
                   <td>
-                    <div className="font-semibold text-gray-800" style={{ wordBreak: 'break-all' }} title={row.projectKey}>
-                      {row.projectName}
+                    <div className="font-semibold text-gray-800" style={{ wordBreak: 'break-all' }}
+                      title={isUnassignedProject(row.projectKey) ? t.unassignedProjectTip : row.projectKey}>
+                      {displayProjectName(row)}
                     </div>
                   </td>
                 )}
@@ -933,11 +1122,14 @@ export default function Dashboard() {
                   <div style={{ fontWeight: '500', color: 'var(--gray-800)' }}>
                     {row.sessionName || t.unnamedSession}
                   </div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--gray-500)' }}>{row.sessionId.split('-')[0]}...</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--gray-500)' }}>{shortSessionId(row.sessionId)}...</div>
                   {row.replayOnly && (
                     <span className="replay-badge" title={t.replayOnlyTip}>
                       {t.replayOnly} · {row.inheritedTurns}
                     </span>
+                  )}
+                  {row.sourceDeleted && (
+                    <span className="source-deleted-badge" title={t.sourceDeletedTip}>{t.sourceDeleted}</span>
                   )}
                 </td>
                 <td><ModelTags models={row.models} /></td>
@@ -945,9 +1137,24 @@ export default function Dashboard() {
                 <td className="text-right font-medium">{fmtNum(row.totalTokens)}</td>
                 <td className="text-right text-indigo font-semibold">{fmtCost(row.cost)}</td>
                 <td className="text-right">
-                  <button className="drill-btn" onClick={() => goTo('conversations', { session: row.sessionId })}>
-                    {t.conversations} <ChevronRight size={13} />
-                  </button>
+                  <div className="row-actions">
+                    <button className="drill-btn" onClick={() => goTo('conversations', { session: row.sessionId })}>
+                      {t.conversations} <ChevronRight size={13} />
+                    </button>
+                    {canRemove && row.sourceDeleted && (
+                      <button type="button" className="row-remove-btn" title={t.removeFromStats} aria-label={t.removeFromStats}
+                        onClick={() => askRemove({
+                          kind: 'session',
+                          id: row.sessionId,
+                          label: row.sessionName || t.unnamedSession,
+                          cost: row.cost,
+                          tokens: row.totalTokens,
+                          sharedHistory: historyLivesOn(row.sessionId),
+                        })}>
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -987,7 +1194,7 @@ export default function Dashboard() {
               <th style={{ width: '140px' }}>{t.model}</th>
               <SortHeader label={t.totalTokens} sortKey="totalTokens" width="80px" align="right" />
               <SortHeader label={t.cost} sortKey="cost" width="75px" align="right" />
-              <th style={{ width: '75px' }} className="text-right">{t.action}</th>
+              <th style={{ width: canRemove ? '115px' : '75px' }} className="text-right">{t.action}</th>
             </tr>
           </thead>
           <tbody>
@@ -995,19 +1202,29 @@ export default function Dashboard() {
               <tr key={row.id}>
                 <td className="ts-cell font-medium">{fmtDate(row.date)}</td>
                 <td className="text-xs">
-                  <div className="font-semibold text-gray-800" style={{ wordBreak: 'break-all' }} title={row.projectKey}>
-                    {row.projectName}
+                  <div className="font-semibold text-gray-800" style={{ wordBreak: 'break-all' }}
+                    title={isUnassignedProject(row.projectKey) ? t.unassignedProjectTip : row.projectKey}>
+                    {displayProjectName(row)}
                   </div>
                 </td>
                 <td className="text-xs">
                   <div title={row.sessionName || row.sessionId} className="font-medium text-gray-700" style={{ wordBreak: 'break-all' }}>
                     {row.sessionName || t.unnamedSession}
                   </div>
-                  <div className="text-gray-400" style={{ fontSize: '10px' }}>{row.sessionId.slice(0, 8)}</div>
+                  <div className="text-gray-400" style={{ fontSize: '10px' }}>{shortSessionId(row.sessionId)}</div>
+                  {row.sourceDeleted && (
+                    <span className="source-deleted-badge" title={t.sourceDeletedTip}>{t.sourceDeleted}</span>
+                  )}
                 </td>
                 <td>
                   {row.kind === 'command' && (
                     <span className="command-badge" title={t.commandTip}>{t.command}</span>
+                  )}
+                  {provider.internalCheckKind && row.kind === provider.internalCheckKind && (
+                    <span className="notification-badge" title={t.internalCheckTip}>{t.internalCheck}</span>
+                  )}
+                  {row.isGoalMode && (
+                    <span className="goal-mode-badge" title={t.goalModeTip}>{t.goalMode}</span>
                   )}
                   <ExpandablePrompt prompt={row.prompt} t={t} />
                   {row.compaction && (
@@ -1023,11 +1240,31 @@ export default function Dashboard() {
                   {row.compaction && !row.cost
                     ? <span className="cost-unlogged" title={t.compactTip}>{t.costNotLogged}</span>
                     : fmtCost(row.cost)}
+                  {row.quotaPct != null && (
+                    <div className="quota-sub" title={t.quotaShareTip.replace('{pct}', fmtQuotaPct(row.quotaPct))}>
+                      {fmtQuotaPct(row.quotaPct)}
+                    </div>
+                  )}
                 </td>
                 <td className="text-right">
-                  <button className="drill-btn" onClick={() => openTurns(row)}>
-                    {t.turns} <ChevronRight size={13} />
-                  </button>
+                  <div className="row-actions">
+                    <button className="drill-btn" onClick={() => openTurns(row)}>
+                      {t.turns} <ChevronRight size={13} />
+                    </button>
+                    {canRemove && row.sourceDeleted && (
+                      <button type="button" className="row-remove-btn" title={t.removeFromStats} aria-label={t.removeFromStats}
+                        onClick={() => askRemove({
+                          kind: 'conversation',
+                          id: row.id,
+                          label: row.prompt || fmtDateOnly(row.date),
+                          cost: row.cost,
+                          tokens: row.totalTokens,
+                          sharedHistory: historyLivesOn(row.sessionId),
+                        })}>
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -1071,10 +1308,11 @@ export default function Dashboard() {
               <SortHeader label={t.cacheRead} sortKey="cacheReadTokens" align="right" />
               <SortHeader label={t.totalTokens} sortKey="totalTokens" align="right" />
               <SortHeader label={t.cost} sortKey="cost" align="right" />
+              {showQuotaCol && <th style={{ textAlign: 'left', cursor: 'help' }} title={t.quotaLeftTip}>{t.quotaLeft}</th>}
             </tr>
           </thead>
           <tbody>
-            {turnsLoading && <EmptyRow colSpan={8} label={t.loadingTurns} />}
+            {turnsLoading && <EmptyRow colSpan={turnsColSpan} label={t.loadingTurns} />}
             {!turnsLoading && sortedTurns.slice(0, visibleRows).map((row) => (
               <tr key={row.id}>
                 <td className="ts-cell font-medium">{fmtDate(row.timestamp)}</td>
@@ -1087,6 +1325,12 @@ export default function Dashboard() {
                       <span className="turn-trigger-text">{row.trigger}</span>
                     </div>
                   )}
+                  {row.subagent && (
+                    <div className="turn-trigger" title={t.subagentTip}>
+                      <span className="subagent-badge">{t.subagent}</span>
+                      {row.agent && <span className="turn-trigger-text">{row.agent}</span>}
+                    </div>
+                  )}
                 </td>
                 <td className="text-right">{fmtNum(row.inputTokens)}</td>
                 <td className="text-right text-green-600">{fmtNum(row.outputTokens)}</td>
@@ -1094,10 +1338,22 @@ export default function Dashboard() {
                 <td className="text-right text-purple-600">{fmtNum(row.cacheReadTokens)}</td>
                 <td className="text-right font-medium">{fmtNum(row.totalTokens)}</td>
                 <td className="text-right text-indigo font-semibold">{fmtCost(row.cost, 5)}</td>
+                {showQuotaCol && (
+                  <td>
+                    {row.quotaPct != null && (
+                      <div className="quota-left">
+                        <span>{t.quota5h}</span>
+                        <span>{fmtQuotaLeft(row.quotaPct)}</span>
+                        <span>{t.quotaWeek}</span>
+                        <span>{fmtQuotaLeft(row.quotaWeekly)}</span>
+                      </div>
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
-            {!turnsLoading && !sortedTurns.length && <EmptyRow colSpan={8} label={t.noTurns} />}
-            {!turnsLoading && <TableFooter total={sortedTurns.length} colSpan={8} />}
+            {!turnsLoading && !sortedTurns.length && <EmptyRow colSpan={turnsColSpan} label={t.noTurns} />}
+            {!turnsLoading && <TableFooter total={sortedTurns.length} colSpan={turnsColSpan} />}
           </tbody>
         </table>
       </div>
@@ -1106,42 +1362,6 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-container">
-      <header className="dashboard-header">
-        <div>
-          <h1 className="header-title">
-            <TerminalSquare className="icon-primary" size={32} /> {t.title}
-            {/* 项目主页入口：显示 GitHub 图标、项目文案与外链指示 */}
-            <button type="button" className="header-github" onClick={openProjectPage}
-              aria-label={t.viewOnGithub} title={t.viewOnGithub}>
-              <GithubIcon size={16} />
-              <span className="header-github-label">{t.githubProject}</span>
-              <ExternalLink size={12} className="header-github-ext" />
-            </button>
-          </h1>
-          <p className="header-subtitle">
-            {t.subtitle}
-            {data.generatedAt && (
-              <span style={{ marginLeft: '12px', fontSize: '0.8rem', color: 'var(--gray-400)' }}>
-                {t.lastUpdated} {new Date(data.generatedAt).toLocaleString(locale)}
-              </span>
-            )}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <DateRangeDropdown
-            value={dateRange}
-            onChange={(val) => { setDateRange(val); setVisibleRows(PAGE_SIZE); }}
-            t={t}
-          />
-          <button onClick={toggleLang} className="refresh-btn" style={{ background: 'var(--gray-100)', color: 'var(--gray-700)', borderColor: 'var(--gray-300)' }}>
-            <Globe size={18} /> {lang === 'en' ? '中文' : 'EN'}
-          </button>
-          <button onClick={handleRefresh} className={`refresh-btn ${refreshing ? 'refreshing' : ''}`} disabled={refreshing}>
-            <RefreshCw size={18} className={refreshing ? 'spin-icon' : ''} /> {refreshing ? t.syncing : t.refresh}
-          </button>
-        </div>
-      </header>
-
       {/* 成本口径说明：订阅制用户并不按 token 付费，必须讲清楚这个数字代表什么。
           这是一次性提示，看过就能关掉；关掉后仍可从总成本卡片上的图标重新打开。 */}
       {costNoteVisible ? (
@@ -1149,7 +1369,7 @@ export default function Dashboard() {
           <Info size={16} />
           <div>
             <strong>{t.costBasisTitle}</strong>
-            <span>{t.costBasisBody}</span>
+            <span>{t.costBasisBody.replace('{plan}', provider.plan)}</span>
             {summary.estimatedPricing && <em> · {t.estimatedPricing}</em>}
           </div>
           <button className="cost-basis-close" onClick={dismissCostNote} aria-label={t.dismiss} title={t.dismiss}>
@@ -1188,22 +1408,36 @@ export default function Dashboard() {
           value={fmtNum(summary.conversationCount)} compact={fmtCompact(summary.conversationCount, locale)} />
       </div>
 
-      <div className="tabs-container">
-        <button className={`tab-btn ${activeTab === 'daily' ? 'active' : ''}`} onClick={() => { setActiveTab('daily'); setVisibleRows(PAGE_SIZE); }}>
-          <Activity size={18} /> {t.dailyTrends}
-        </button>
-        <button className={`tab-btn ${activeTab === 'projects' ? 'active' : ''}`} onClick={() => { setActiveTab('projects'); setVisibleRows(PAGE_SIZE); }}>
-          <FolderOpen size={18} /> {t.projects}
-        </button>
-        <button className={`tab-btn ${activeTab === 'sessions' ? 'active' : ''}`} onClick={() => { setActiveTab('sessions'); setVisibleRows(PAGE_SIZE); }}>
-          <MessageSquare size={18} /> {t.sessions}
-        </button>
-        <button className={`tab-btn ${activeTab === 'conversations' ? 'active' : ''}`} onClick={() => { setActiveTab('conversations'); setVisibleRows(PAGE_SIZE); }}>
-          <AlignLeft size={18} /> {t.conversations}
-        </button>
-        {activeTab === 'turns' && (
-          <button className="tab-btn active"><TerminalSquare size={18} /> {t.turns}</button>
-        )}
+      <div className="tabs-row">
+        <div className="tabs-container">
+          <button className={`tab-btn ${activeTab === 'daily' ? 'active' : ''}`} onClick={() => { setActiveTab('daily'); setVisibleRows(PAGE_SIZE); }}>
+            <Activity size={18} /> {t.dailyTrends}
+          </button>
+          <button className={`tab-btn ${activeTab === 'projects' ? 'active' : ''}`} onClick={() => { setActiveTab('projects'); setVisibleRows(PAGE_SIZE); }}>
+            <FolderOpen size={18} /> {t.projects}
+          </button>
+          <button className={`tab-btn ${activeTab === 'sessions' ? 'active' : ''}`} onClick={() => { setActiveTab('sessions'); setVisibleRows(PAGE_SIZE); }}>
+            <MessageSquare size={18} /> {t.sessions}
+          </button>
+          <button className={`tab-btn ${activeTab === 'conversations' ? 'active' : ''}`} onClick={() => { setActiveTab('conversations'); setVisibleRows(PAGE_SIZE); }}>
+            <AlignLeft size={18} /> {t.conversations}
+          </button>
+          {activeTab === 'turns' && (
+            <button className="tab-btn active"><TerminalSquare size={18} /> {t.turns}</button>
+          )}
+        </div>
+        {/* 价目表和省 token 技巧这两个弹窗都跟 activeTab 无关，放在 tab 行最右侧，不管当前在
+            哪个 tab 下都能点开 —— 挂在某个具体 tab 页面内容里的话，切到其他 tab 就找不到了。 */}
+        <div className="tabs-row-actions">
+          <button type="button" className="pricing-tab-btn" onClick={() => setTokenTipsDialogOpen(true)}
+            aria-label={`${provider.label} ${t.showTokenTips}`} title={`${provider.label} ${t.showTokenTips}`}>
+            <Lightbulb size={16} /> {provider.label} {t.tokenTipsTab}
+          </button>
+          <button type="button" className="pricing-tab-btn" onClick={() => setPricingDialogOpen(true)}
+            aria-label={`${provider.label} ${t.showPricingTable}`} title={`${provider.label} ${t.showPricingTable}`}>
+            <Receipt size={16} /> {provider.label} {t.pricingTab}
+          </button>
+        </div>
       </div>
 
       {activeTab === 'daily' && renderDailyTab()}
@@ -1220,6 +1454,175 @@ export default function Dashboard() {
         </p>
       )}
 
+      {removeTarget && (
+        <RemoveDialog target={removeTarget} t={t} busy={removing} error={removeError}
+          onCancel={cancelRemove} onConfirm={confirmRemove} />
+      )}
+
+      {pricingDialogOpen && (
+        <PricingDialog provider={provider} t={t} onClose={() => setPricingDialogOpen(false)} />
+      )}
+
+      {tokenTipsDialogOpen && (
+        <TokenTipsDialog provider={provider} t={t} lang={lang} onClose={() => setTokenTipsDialogOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 应用外壳：标题栏（标题/GitHub 入口/时间范围/语言/刷新）和数据源切换条
+ * 只在这一层渲染一份，两个数据源共用。数据源切换条排在标题栏**之下**，
+ * 是整个应用里的第二级导航，和下面「每日/项目/会话/对话」那一排 tab 同级，
+ * 不再是挂在最顶上、切换时把标题栏也一起换掉的东西。
+ *
+ * 两个数据源的数据由这一层统一拉取和持有（loadProvider/providerState），
+ * 和 DOM 里挂不挂载 UsageDashboard 无关，所以下面只挂载当前选中的那一个
+ * 也不影响另一边在后台保持数据新鲜。这带来两个效果：
+ *   1) 刷新按钮在标题栏，点一次会同时刷新 Claude Code 和 Codex（见
+ *      handleRefreshAll），而不是只刷当前看到的那一个；
+ *   2) 时间范围这类设置提到这一层做成共享状态，切换数据源不会被重置，
+ *      也不用重新拉一遍缓存——两边的数据各自独立抓取、独立出错，
+ *      一边报错不会连累另一边，仍然满足"数据分离"的要求。
+ */
+export default function Page() {
+  const lang = useSyncExternalStore(subscribeLang, getLangSnapshot, getLangServerSnapshot);
+  const t = i18n[lang];
+  const locale = lang === 'zh' ? 'zh-CN' : 'en-US';
+  const toggleLang = () => setStoredLang(lang === 'en' ? 'zh' : 'en');
+
+  const activeProvider = useSyncExternalStore(
+    subscribeProvider, getProviderSnapshot, getProviderServerSnapshot
+  );
+
+  const [dateRange, setDateRange] = useState('all');
+
+  const [providerState, setProviderState] = useState(() => {
+    const init = {};
+    for (const key of PROVIDER_ORDER) init[key] = { data: null, loading: true, error: null };
+    return init;
+  });
+  const [refreshingAll, setRefreshingAll] = useState(false);
+
+  /** 读取（或在缓存失效时重建）单个数据源，失败只记到它自己名下。 */
+  const loadProvider = useCallback(async (key, { force = false } = {}) => {
+    const provider = PROVIDERS[key];
+    try {
+      let cacheData;
+      if (force) {
+        cacheData = await provider.refreshUsage({ force: true });
+      } else {
+        const { cache, rebuildReason } = await provider.readCache();
+        cacheData = rebuildReason ? await provider.refreshUsage({ force: true }) : cache;
+      }
+      setProviderState((prev) => ({ ...prev, [key]: { data: toPayload(cacheData), loading: false, error: null } }));
+    } catch (err) {
+      setProviderState((prev) => ({ ...prev, [key]: { data: prev[key].data, loading: false, error: err.message } }));
+    }
+  }, []);
+
+  // 启动时两个数据源各自拉一次，互不等待、互不影响。
+  useEffect(() => {
+    PROVIDER_ORDER.forEach((key) => loadProvider(key));
+  }, [loadProvider]);
+
+  /** 标题栏那一个刷新按钮：同时强制重刷两边，各自独立成功/失败。 */
+  const handleRefreshAll = useCallback(async () => {
+    setRefreshingAll(true);
+    await Promise.all(PROVIDER_ORDER.map((key) => loadProvider(key, { force: true })));
+    setRefreshingAll(false);
+  }, [loadProvider]);
+
+  /** 删除缓存记录这类操作改完数据后，把结果写回这一个数据源自己的状态。 */
+  const updateProviderData = useCallback((key, payload) => {
+    setProviderState((prev) => ({ ...prev, [key]: { ...prev[key], data: payload } }));
+  }, []);
+
+  // 唤不起浏览器时弹的说明框。null 表示不显示，copied 记录地址有没有进剪贴板。
+  const [linkDialog, setLinkDialog] = useState(null);
+
+  /** 桌面端的 WebView 会拦掉 window.open，外链只能交给系统浏览器。 */
+  const openProjectPage = useCallback(async () => {
+    try {
+      await openUrl(PROJECT_URL);
+      return;
+    } catch {
+      // 浏览器里跑 next dev 时没有 Tauri，退回普通新开标签页。
+      if (typeof window !== 'undefined' && window.open(PROJECT_URL, '_blank', 'noopener')) return;
+    }
+    // 两条路都不通就把地址交到用户手上，别让这次点击无声无息地消失。
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(PROJECT_URL);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+    setLinkDialog({ copied });
+  }, []);
+
+  const activeData = providerState[activeProvider].data;
+
+  return (
+    <div className="app-shell">
+      <header className="dashboard-header">
+        <div>
+          <h1 className="header-title">
+            <TerminalSquare className="icon-primary" size={32} /> {t.title}
+            {/* 项目主页入口：显示 GitHub 图标、项目文案与外链指示 */}
+            <button type="button" className="header-github" onClick={openProjectPage}
+              aria-label={t.viewOnGithub} title={t.viewOnGithub}>
+              <GithubIcon size={16} />
+              <span className="header-github-label">{t.githubProject}</span>
+              <ExternalLink size={12} className="header-github-ext" />
+            </button>
+          </h1>
+          <p className="header-subtitle">
+            {t.subtitle}
+            {activeData?.generatedAt && (
+              <span style={{ marginLeft: '12px', fontSize: '0.8rem', color: 'var(--gray-400)' }}>
+                {t.lastUpdated} {new Date(activeData.generatedAt).toLocaleString(locale)}
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="header-controls">
+          <DateRangeDropdown value={dateRange} onChange={setDateRange} t={t} />
+          <button onClick={toggleLang} className="refresh-btn" style={{ background: 'var(--gray-100)', color: 'var(--gray-700)', borderColor: 'var(--gray-300)' }}>
+            <Globe size={18} /> {lang === 'en' ? '中文' : 'EN'}
+          </button>
+          <button onClick={handleRefreshAll} className={`refresh-btn ${refreshingAll ? 'refreshing' : ''}`} disabled={refreshingAll}>
+            <RefreshCw size={18} className={refreshingAll ? 'spin-icon' : ''} /> {refreshingAll ? t.syncing : t.refresh}
+          </button>
+          <ProviderSwitch activeKey={activeProvider} onChange={setStoredProvider} t={t} />
+        </div>
+      </header>
+
+      {/*
+        只挂载当前选中的那一个：两边的数据都由上面的 loadProvider/handleRefreshAll
+        统一拉取和持有，不受这里挂不挂载影响，所以不需要为了"切换时不丢状态"把
+        两个看板都常驻在 DOM 里——常驻反而会让不可见那一侧的 Recharts 图表在
+        display:none 下量出 0×0 尺寸，切回来时不一定能正确重新测量。切换数据源时
+        下钻筛选状态清空是合理的（本来就是完全不同的两份数据），和以前用 key
+        强制重新挂载时的行为一致。
+      */}
+      {(() => {
+        const state = providerState[activeProvider];
+        return (
+          <UsageDashboard
+            key={activeProvider}
+            provider={PROVIDERS[activeProvider]}
+            data={state.data}
+            loading={state.loading}
+            error={state.error}
+            t={t}
+            locale={locale}
+            dateRange={dateRange}
+            onDataChange={(payload) => updateProviderData(activeProvider, payload)}
+          />
+        );
+      })()}
+
       <footer className="app-footer">
         <span className="app-footer-meta">
           <span className="app-footer-name">{t.title}</span>
@@ -1227,6 +1630,7 @@ export default function Dashboard() {
           <span> · {t.localOnlyNote}</span>
         </span>
       </footer>
+
       {linkDialog && (
         <ProjectLinkDialog copied={linkDialog.copied} t={t} onClose={() => setLinkDialog(null)} />
       )}

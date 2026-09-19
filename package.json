@@ -1,6 +1,6 @@
 {
   "name": "claude-code-token-lens",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A beautiful, local-first usage tracker and dashboard for AI coding agents (Claude Code, etc.).",
   "keywords": [
     "claude",
@@ -19,6 +19,7 @@
     "build": "next build",
     "lint": "eslint",
     "verify": "node scripts/verify.mjs",
+    "verify:codex": "node scripts/verify-codex.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

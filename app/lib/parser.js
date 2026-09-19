@@ -24,7 +24,15 @@ function errText(err) {
 
 const env = (typeof process !== 'undefined' && process.env) ? process.env : {};
 
-export const CACHE_VERSION = 3;
+/**
+ * v4：日志被删后统计改为保留（sourceDeleted），新增子 agent 日志。旧缓存里没有 promptIndex，
+ *     子 agent 的开销挂不回父对话，所以要整体重建一次。
+ * v5：去掉 v4 的「移除墓碑」。删除只针对原始日志已不在的记录，日志还在的内容一律以日志为准；
+ *     重建一次，让 v4 期间被墓碑挡掉、但日志仍在的内容重新出现。
+ * v6：解析顺序从「按路径」改为「按文件里第一条时间戳」，分叉、编辑重发复制出来的历史记回原会话；
+ *     注册表新增 startedAt。重建一次，纠正旧缓存里挂错会话的共享历史。
+ */
+export const CACHE_VERSION = 6;
 
 /**
  * 去重范围。
@@ -78,6 +86,16 @@ export function toLocalDay(iso) {
   return y + '-' + m + '-' + day;
 }
 
+/**
+ * 对话 id 里的 uuid 部分。resume 复制出去的副本共用同一个 uuid；缺 uuid 时退回的
+ * `seqN` 只在本会话内唯一，这时返回完整 id。
+ */
+function conversationUuid(cid) {
+  const id = String(cid);
+  const uuid = id.slice(id.indexOf(':') + 1);
+  return !uuid || uuid.startsWith('seq') ? id : uuid;
+}
+
 function emptyCache() {
   return {
     version: CACHE_VERSION,
@@ -87,11 +105,31 @@ function emptyCache() {
     fileRegistry: {},
     sessions: {},
     conversations: {},
+    // sessionId -> { promptId -> conversationId }，子 agent 靠它找到派出自己的那次提问
+    promptIndex: {},
     projects: [],
     daily: [],
     summary: {},
     stats: {},
   };
+}
+
+/**
+ * 从旧缓存里挑出**没法从日志重算**的部分，其余一律丢弃重建：原始日志已删除、但统计
+ * 保留下来的会话，连同它的对话与 promptIndex（分片不在缓存文件里，原地不动）。
+ */
+function carryOverArchive(old) {
+  const cache = emptyCache();
+  if (!old || typeof old !== 'object') return cache;
+  for (const [sid, session] of Object.entries(old.sessions || {})) {
+    if (!session || !session.sourceDeleted) continue;
+    cache.sessions[sid] = session;
+    if (old.promptIndex && old.promptIndex[sid]) cache.promptIndex[sid] = old.promptIndex[sid];
+  }
+  for (const [cid, conv] of Object.entries(old.conversations || {})) {
+    if (conv && cache.sessions[conv.sessionId]) cache.conversations[cid] = conv;
+  }
+  return cache;
 }
 
 export async function readCache() {
@@ -111,7 +149,7 @@ export async function readCache() {
       || parsed.dedupScope !== DEDUP_SCOPE
       || parsed.storePrompts !== STORE_PROMPTS
     ) {
-      return { cache: emptyCache(), rebuildReason: 'cache-version-or-scope-changed' };
+      return { cache: carryOverArchive(parsed), rebuildReason: 'cache-version-or-scope-changed' };
     }
     return { cache: Object.assign(emptyCache(), parsed), rebuildReason: null };
   } catch (err) {
@@ -159,6 +197,86 @@ export async function getTurnsForConversation(conversationId) {
   }
   out.sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
   return out;
+}
+
+/** 这条记录的内容是否还有一部分存在于仍在的日志里（见 removeFromStats）。 */
+function overlapsLiveLogs(cache, sessionId, convIds) {
+  const live = (sid) => !!cache.sessions[sid] && !cache.sessions[sid].sourceDeleted;
+  // 主日志删了，但它的子 agent 日志还在
+  if (Object.values(cache.fileRegistry).some((r) => r.sessionId === sessionId)) return true;
+  // 它的历史被 resume 复制进了仍在的会话
+  if (Object.values(cache.sessions).some((s) => live(s.sessionId) && (s.inheritedFrom || []).includes(sessionId))) {
+    return true;
+  }
+  // 要删的对话横跨到了仍在的会话（被 resume 打断的提问，两半 turn 分在两处）
+  for (const cid of convIds) {
+    if ((cache.conversations[cid].shards || []).some(live)) return true;
+  }
+  return false;
+}
+
+/**
+ * 删除一条「原始日志已删除」的缓存记录：整个会话，或其中一条对话。
+ *
+ * 只允许删日志已经不在的记录。日志还在的内容一律以日志为准，删了下次同步也会回来，
+ * 所以界面上根本不给这个按钮。删除会把提示词原文和 turn 明细一起从磁盘抹掉，不留痕迹。
+ *
+ * 通常一次增量刷新就够了。例外是这条记录的内容**还存在于某个仍在的日志里**，最常见的是
+ * resume：Claude Code 把旧会话的整段历史复制进新会话的日志，去重后这些调用只记在旧会话
+ * 名下。旧会话的记录删掉后，按「日志在就算」它们应改记到新会话，可新会话的日志没变、
+ * 增量刷新不会重读它 —— 这时做一次全量重建。
+ */
+export async function removeFromStats({ sessionId = null, conversationId = null } = {}) {
+  const { cache, rebuildReason } = await readCache();
+  if (rebuildReason) throw new Error('缓存尚未就绪，请先刷新: ' + rebuildReason);
+
+  let owner;
+  const convIds = new Set();
+  if (sessionId) {
+    owner = cache.sessions[sessionId];
+    if (!owner) throw new Error('会话不存在: ' + sessionId);
+    for (const [cid, conv] of Object.entries(cache.conversations)) {
+      if (conv.sessionId === sessionId) convIds.add(cid);
+    }
+  } else if (conversationId) {
+    const conv = cache.conversations[conversationId];
+    if (!conv) throw new Error('对话不存在: ' + conversationId);
+    owner = cache.sessions[conv.sessionId];
+    convIds.add(conversationId);
+  } else {
+    throw new Error('removeFromStats 需要 sessionId 或 conversationId');
+  }
+  if (!owner || !owner.sourceDeleted) {
+    throw new Error('原始日志仍在，不能删除：下次同步它会重新出现');
+  }
+  const needsRebuild = overlapsLiveLogs(cache, owner.sessionId, convIds);
+
+  // 这些对话的 turn 可能横跨多个分片。日志已删除的分片没法重算，必须在这里删干净；
+  // 日志还在的分片即便这里删了，也会在紧接着的全量重建里按日志重读回来。
+  const shardIds = new Set(sessionId ? [sessionId] : []);
+  for (const cid of convIds) {
+    const conv = cache.conversations[cid];
+    for (const sid of conv.shards || [conv.sessionId]) shardIds.add(sid);
+  }
+  for (const sid of shardIds) {
+    if (sid === sessionId) {
+      await io.removeTurns(sid);
+      continue;
+    }
+    const turns = await readTurnsShard(sid);
+    const left = turns.filter((t) => !convIds.has(t.conversationId));
+    if (left.length !== turns.length) await writeTurnsShard(sid, left);
+  }
+  for (const cid of convIds) delete cache.conversations[cid];
+  if (sessionId) {
+    delete cache.sessions[sessionId];
+    delete cache.promptIndex[sessionId];
+  }
+  await writeCache(cache);
+
+  const next = await refreshUsage({ force: needsRebuild });
+  next.stats.deletionRebuild = needsRebuild;
+  return next;
 }
 
 async function writeTurnsShard(sessionId, turns) {
@@ -313,6 +431,30 @@ function newConversation(id, sessionId, timestamp, prompt, kind = 'prompt') {
   };
 }
 
+/** 只读文件头时每块的大小：够装下开头几行元数据，不必像正常解析那样一次搬 4MB。 */
+const HEAD_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * 文件里第一条带时间戳的记录的时间，决定解析顺序（原因见 refreshUsage）。
+ * 找到就停，通常只读第一块；读不了返回 null，排到最后，解析阶段会再记错误。
+ */
+async function readStartedAt(filePath) {
+  try {
+    for await (const line of io.readLines(filePath, 0, HEAD_CHUNK_BYTES)) {
+      if (!line.includes('"timestamp"')) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.timestamp) return entry.timestamp;
+      } catch {
+        /* 半截行，接着往下找 */
+      }
+    }
+  } catch {
+    /* 同上：交给解析阶段报错 */
+  }
+  return null;
+}
+
 /**
  * 流式解析单个 JSONL 文件的一段区间。
  *
@@ -342,7 +484,25 @@ async function parseFileRange(filePath, startOffset, ctx) {
     if (entry.customTitle) ctx.customTitle = entry.customTitle;
     if (entry.aiTitle) ctx.aiTitle = entry.aiTitle;
 
+    if (ctx.subagent) {
+      // 子 agent 的日志里每条 user 记录都带着父会话那次提问的 promptId，据此挂回父对话。
+      if (!ctx.currentConvId && entry.promptId && ctx.promptIndex[entry.promptId]) {
+        ctx.currentConvId = ctx.promptIndex[entry.promptId];
+      }
+    } else if (entry.type === 'user' && entry.promptId && ctx.currentConvId && !ctx.promptIndex[entry.promptId]) {
+      // 工具结果、后台唤醒这些 user 记录也带 promptId，一并记下它们落在哪条对话里。
+      ctx.promptIndex[entry.promptId] = ctx.currentConvId;
+    }
+
     if (isRealUserPrompt(entry)) {
+      if (ctx.subagent) {
+        // 子 agent 日志里的 user 消息是父会话派给它的任务说明，不是你打的字，不新开对话；
+        // 第一条顺手拿来当这个子 agent 的说明。
+        if (!ctx.agentLabel && STORE_PROMPTS) {
+          ctx.agentLabel = extractPromptText(entry).replace(/\s+/g, ' ').trim().slice(0, 160) || null;
+        }
+        continue;
+      }
       const raw = rawPromptText(entry);
       const text = extractPromptText(entry);
       // 系统注入的内容不新开一段对话，后续的 assistant 轮次仍归到上一条真实提问下 ——
@@ -364,6 +524,7 @@ async function parseFileRange(filePath, startOffset, ctx) {
       const id = conversationId(ctx.sessionId, entry.uuid, ctx.convSeq);
       ctx.convSeq++;
       ctx.currentConvId = id;
+      if (entry.promptId) ctx.promptIndex[entry.promptId] = id;
       const isCmd = isSlashCommandEntry(raw);
       const conv = newConversation(id, ctx.sessionId, entry.timestamp, text, isCmd ? 'command' : 'prompt');
       // /compact 之前刚记录过一次压缩边界，把规模挂到这条命令上。
@@ -410,6 +571,9 @@ async function parseFileRange(filePath, startOffset, ctx) {
 
     // 没有 message.id 就无法判重，只能保留（实测本机日志中为 0 条）。
     const key = msgId ? dedupKey(msgId, requestId, entrySessionId) : null;
+    const turnId = entry.uuid || ctx.sessionId + ':turn:' + ctx.turnSeq;
+    if (ctx.subagent && !ctx.currentConvId) ctx.currentConvId = subagentFallbackConv(ctx, entry.timestamp);
+
     if (key) {
       const existing = ctx.seen.get(key);
       if (existing) {
@@ -443,7 +607,7 @@ async function parseFileRange(filePath, startOffset, ctx) {
     const pricing = getPricing(rawModel);
     const breakdown = calculateCostBreakdown(tokens, rawModel, { speed: usage.speed });
     const turn = {
-      id: entry.uuid || ctx.sessionId + ':turn:' + ctx.turnSeq,
+      id: turnId,
       dedupKey: key,
       conversationId: ctx.currentConvId,
       sessionId: ctx.sessionId,
@@ -467,10 +631,32 @@ async function parseFileRange(filePath, startOffset, ctx) {
       costCacheRead: breakdown.cacheRead,
       costServerTools: breakdown.serverTools,
     };
+    if (ctx.subagent) {
+      turn.subagent = ctx.subagent;
+      turn.agent = ctx.agentLabel;
+    }
     ctx.turnSeq++;
     ctx.turns.push(turn);
     if (key) ctx.seen.set(key, turn);
   }
+}
+
+/**
+ * 子 agent 找不到 promptId 对应的对话时（例如父日志被截断过），退而挂到它开始之前
+ * 父会话里最近的一条对话上；连这个都没有，才单独建一条。
+ */
+function subagentFallbackConv(ctx, timestamp) {
+  let best = null;
+  for (const conv of ctx.conversations.values()) {
+    if (!conv.date || (timestamp && conv.date > timestamp)) continue;
+    if (!best || conv.date > best.date) best = conv;
+  }
+  if (best) return best.id;
+  const id = ctx.sessionId + ':' + ctx.subagent;
+  if (!ctx.conversations.has(id)) {
+    ctx.conversations.set(id, newConversation(id, ctx.sessionId, timestamp, '(子 agent)'));
+  }
+  return id;
 }
 
 /**
@@ -480,26 +666,65 @@ async function parseFileRange(filePath, startOffset, ctx) {
  *  - mtime 和 size 都没变     -> 完全跳过
  *  - size 变大且 mtime 变新   -> 从 offset 续读，只解析新增字节
  *  - size 变小（被截断/重写） -> 整文件重解析
+ *
+ * 日志文件消失时**保留统计**，只把会话标成 sourceDeleted：Claude Code 会按 cleanupPeriodDays
+ * （默认 30 天）删掉不活跃的 CLI 会话日志，会话也可能被手动删掉。要是跟着删，看板上的
+ * 历史会悄悄变少，也就没法和过去比。这类记录可以用 removeFromStats 手动删掉。
  */
 export async function refreshUsage({ force = false } = {}) {
   const started = Date.now();
   const { cache, rebuildReason } = await readCache();
   const fullRebuild = force || !!rebuildReason;
+  // 全量重建会清空注册表，先留一份：里面的 startedAt 还能接着用，省得重读文件头。
+  const knownRegistry = cache.fileRegistry || {};
   if (fullRebuild) {
+    // 全量重建只重算「日志还在」的部分。原始日志已删除的会话没法重算，连同分片原样留下。
+    const kept = carryOverArchive(cache);
+    const keptShards = new Map();
+    for (const sessionId of Object.keys(kept.sessions)) {
+      keptShards.set(sessionId, await readTurnsShard(sessionId));
+    }
     cache.fileRegistry = {};
-    cache.sessions = {};
-    cache.conversations = {};
+    cache.sessions = kept.sessions;
+    cache.conversations = kept.conversations;
+    cache.promptIndex = kept.promptIndex;
     await io.clearAllTurns();
+    for (const [sessionId, turns] of keptShards) await writeTurnsShard(sessionId, turns);
   }
+  if (!cache.promptIndex) cache.promptIndex = {};
 
-  // 按路径排序，让解析顺序与目录遍历顺序无关。
-  // global 去重下「谁先出现谁记账」，顺序一变，被 resume 继承的历史就会挂到
-  // 另一个 session 名下 —— 总额不变，但每个 session 的数字会跟着抖。
-  const files = (await io.listLogFiles()).sort(
-    (a, b) => (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0)
+  // 解析顺序决定共享历史记在谁名下：global 去重下「谁先解析谁记账」。
+  // 编辑已发送的提示词、/branch、--fork-session 都会新开一个会话文件，把分叉点之前的
+  // 历史原样复制进去（uuid、时间戳都不变）。按路径排序时这段历史归谁取决于会话 ID 的
+  // 字母顺序，常常挂到后来的副本上，原会话反而只剩被放弃的那一段。
+  // 所以按「文件里第一条带时间戳的记录」排序：副本的第一条是它被创建的时刻，复制来的
+  // 历史排在后面，原会话一定先解析。增量刷新时新文件本来就排在已记账的文件之后，两者一致。
+  const listed = await io.listLogFiles();
+  const startedAt = new Map();
+  for (const file of listed) {
+    const reg = knownRegistry[file.filePath];
+    // 追加写不会改动文件头；文件变小说明被重写过，要重新读。
+    const known = reg && 'startedAt' in reg && file.size >= reg.size;
+    startedAt.set(file.filePath, known ? reg.startedAt : await readStartedAt(file.filePath));
+  }
+  const sessionStart = new Map();
+  for (const file of listed) {
+    if (!file.subagent) sessionStart.set(file.sessionId, startedAt.get(file.filePath));
+  }
+  // 子 agent 日志跟着父会话排，并排在父会话主日志之后：它要用主日志建好的 promptIndex。
+  const orderKey = (file) =>
+    (file.subagent && sessionStart.has(file.sessionId)
+      ? sessionStart.get(file.sessionId)
+      : startedAt.get(file.filePath)) || '￿';
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const files = listed.sort((a, b) =>
+    cmp(orderKey(a), orderKey(b))
+    || cmp(a.subagent ? 1 : 0, b.subagent ? 1 : 0)
+    || cmp(a.filePath, b.filePath)
   );
   const stats = {
     filesScanned: files.length,
+    subagentFiles: files.filter((f) => f.subagent).length,
     filesParsed: 0,
     linesParsed: 0,
     linesSkipped: 0,
@@ -510,22 +735,34 @@ export async function refreshUsage({ force = false } = {}) {
     compactions: 0,
     taskNotifications: 0,
     compactedTokens: 0,
-    filesRemoved: 0,
+    filesArchived: 0,
+    logDirUnavailable: false,
     rebuildReason,
   };
 
-  // 已删除的日志文件要连同它的数据一起清掉，否则会永远留在看板上。
-  const alive = new Set(files.map((f) => f.filePath));
-  for (const registered of Object.keys(cache.fileRegistry)) {
-    if (alive.has(registered)) continue;
-    const sessionId = cache.fileRegistry[registered].sessionId;
-    delete cache.fileRegistry[registered];
-    delete cache.sessions[sessionId];
-    for (const [cid, conv] of Object.entries(cache.conversations)) {
-      if (conv.sessionId === sessionId) delete cache.conversations[cid];
+  // 日志文件不见了：统计保留，只打标记（原因见函数注释）。
+  // 一个文件都列不出来、缓存里却登记着文件，多半是日志目录暂时读不到（权限被拒、
+  // 外置盘没挂上），不是真的全删了 —— 这时什么都不动，等目录回来。
+  const registered = Object.keys(cache.fileRegistry);
+  if (!files.length && registered.length) {
+    stats.logDirUnavailable = true;
+  } else {
+    const alive = new Set(files.map((f) => f.filePath));
+    const liveSessions = new Set(files.filter((f) => !f.subagent).map((f) => f.sessionId));
+    const detectedAt = new Date().toISOString();
+    for (const filePath of registered) {
+      if (alive.has(filePath)) continue;
+      const reg = cache.fileRegistry[filePath];
+      delete cache.fileRegistry[filePath];
+      // 子 agent 日志单独消失：它的开销早已写进父会话分片，留着即可。
+      // 主日志换了位置（同一个 sessionId 出现在新路径下）会在下面从头重新解析，也不算删除。
+      if (reg.subagent || liveSessions.has(reg.sessionId)) continue;
+      const session = cache.sessions[reg.sessionId];
+      if (session && !session.sourceDeleted) {
+        session.sourceDeleted = detectedAt;
+        stats.filesArchived++;
+      }
     }
-    await io.removeTurns(sessionId);
-    stats.filesRemoved++;
   }
 
   // global 模式下去重要跨 session 生效，需要一份全局已见键的归属表。
@@ -556,32 +793,44 @@ export async function refreshUsage({ force = false } = {}) {
     }
 
     const sessionId = file.sessionId;
-    const prev = resume ? cache.sessions[sessionId] : null;
-    const existingTurns = resume ? await readTurnsShard(sessionId) : [];
+    const subagent = file.subagent || null;
+    // 子 agent 的 turn 写进父会话的分片，所以哪怕它是从头解析，也是在父会话现有数据上追加。
+    const append = resume || !!subagent;
+    const prev = append ? cache.sessions[sessionId] : null;
+    const oldTurns = await readTurnsShard(sessionId);
+    // 从头解析时，作废的只是「这个文件上次写进来的那部分」：主日志重解析不能顺手丢掉
+    // 子 agent 的 turn（子 agent 文件没变就不会被重读），反过来也一样。
+    const ownedByThisFile = (t) => (subagent ? t.subagent === subagent : !t.subagent);
+    const existingTurns = resume ? oldTurns : oldTurns.filter((t) => !ownedByThisFile(t));
 
-    // 整文件重解析时，先把这个 session 的旧数据从全局去重表里摘掉，
-    // 否则重解析出来的行会被自己的旧记录判成重复。
     if (!resume) {
-      for (const t of await readTurnsShard(sessionId)) {
-        if (t.dedupKey && seenOwner.get(t.dedupKey) === t) seenOwner.delete(t.dedupKey);
-        else if (t.dedupKey && seenOwner.has(t.dedupKey) && seenOwner.get(t.dedupKey).sessionId === sessionId) {
-          seenOwner.delete(t.dedupKey);
-        }
+      // 先把这部分旧数据从全局去重表里摘掉，否则重解析出来的行会被自己的旧记录判成重复。
+      for (const t of oldTurns) {
+        if (!t.dedupKey || !ownedByThisFile(t)) continue;
+        const owner = seenOwner.get(t.dedupKey);
+        if (owner && owner.sessionId === sessionId && ownedByThisFile(owner)) seenOwner.delete(t.dedupKey);
       }
-      for (const [cid, conv] of Object.entries(cache.conversations)) {
-        if (conv.sessionId === sessionId) delete cache.conversations[cid];
+      if (!subagent) {
+        for (const [cid, conv] of Object.entries(cache.conversations)) {
+          if (conv.sessionId === sessionId) delete cache.conversations[cid];
+        }
       }
     }
 
     const conversations = new Map();
-    if (resume) {
+    if (append) {
       for (const [cid, conv] of Object.entries(cache.conversations)) {
         if (conv.sessionId === sessionId) conversations.set(cid, conv);
       }
     }
+    if (!cache.promptIndex[sessionId]) cache.promptIndex[sessionId] = {};
+    // 子 agent 的说明文字不单独落盘（它是任务原文），续读时从已有 turn 上取回。
+    const knownAgent = subagent ? existingTurns.find((t) => t.subagent === subagent) : null;
 
     const ctx = {
       sessionId,
+      subagent,
+      agentLabel: knownAgent ? knownAgent.agent || null : null,
       cwd: prev ? prev.cwd : null,
       firstActivity: prev ? prev.firstActivity : null,
       lastActivity: prev ? prev.date : null,
@@ -595,6 +844,7 @@ export async function refreshUsage({ force = false } = {}) {
       inheritedTurns: prev ? prev.inheritedTurns || 0 : 0,
       inheritedFrom: new Set(prev ? prev.inheritedFrom || [] : []),
       conversations,
+      promptIndex: cache.promptIndex[sessionId],
       turns: existingTurns.slice(),
       seen: DEDUP_SCOPE === 'global' ? seenOwner : new Map(),
       superseded,
@@ -633,16 +883,20 @@ export async function refreshUsage({ force = false } = {}) {
       date: ctx.lastActivity,
       inheritedTurns: ctx.inheritedTurns,
       inheritedFrom: Array.from(ctx.inheritedFrom),
+      // 主日志重新出现（从废纸篓拿回来）就清掉标记；只有子 agent 文件更新时沿用。
+      sourceDeleted: (subagent && prev && prev.sourceDeleted) || null,
     };
 
     cache.fileRegistry[file.filePath] = {
       mtimeMs: file.mtimeMs,
       size: file.size,
       offset: file.size,
+      startedAt: startedAt.get(file.filePath) ?? null,
       sessionId,
       lastConversationId: ctx.currentConvId,
       convSeq: ctx.convSeq,
       turnSeq: ctx.turnSeq,
+      ...(subagent ? { subagent } : {}),
     };
   }
 
@@ -772,6 +1026,13 @@ async function deriveTotalsFromTurns(cache, superseded) {
   }
 
   const canonical = mergeReplayedConversations(cache, shardTurns);
+  // 分片里的 turn 指向一条早已不存在的对话时（典型情况：resume 出来的会话继续往
+  // 上一次刷新时被合并掉的副本上写），按 uuid 找回合并后留下的那一条，否则就成了孤儿。
+  const byUuid = new Map();
+  for (const cid of Object.keys(cache.conversations)) {
+    const key = conversationUuid(cid);
+    if (key !== cid && !byUuid.has(key)) byUuid.set(key, cid);
+  }
   const convTotals = new Map();
   const convModels = new Map();
   const convShards = new Map();
@@ -780,7 +1041,8 @@ async function deriveTotalsFromTurns(cache, superseded) {
     // 归到被合并掉的副本名下的 turn 就地改指到保留的那条，否则它们会变成
     // 指向已删除记录的孤儿：金额算得对，下钻却是空的。
     for (const t of kept) {
-      const canon = canonical.get(t.conversationId);
+      let canon = canonical.get(t.conversationId);
+      if (!canon && !cache.conversations[t.conversationId]) canon = byUuid.get(conversationUuid(t.conversationId));
       if (canon && canon !== t.conversationId) {
         t.conversationId = canon;
         shardDirty.add(sessionId);
@@ -844,6 +1106,13 @@ async function deriveTotalsFromTurns(cache, superseded) {
     conv.projectKey = session ? session.projectKey : null;
     conv.projectName = session ? session.projectName : null;
     conv.sessionName = session ? session.sessionName : conv.sessionId;
+    conv.sourceDeleted = session ? session.sourceDeleted || null : null;
+  }
+
+  // 会话记录和日志登记都已经没有了的 promptIndex，不会再有人用到。
+  const registeredSessions = new Set(Object.values(cache.fileRegistry).map((r) => r.sessionId));
+  for (const sid of Object.keys(cache.promptIndex)) {
+    if (!cache.sessions[sid] && !registeredSessions.has(sid)) delete cache.promptIndex[sid];
   }
 }
 

@@ -17,6 +17,12 @@ export const CACHE_WRITE_1H_MULTIPLIER = 2.0;
 /** Opus 5 / Opus 4.8 的 fast 模式按 2 倍标准价计费。 */
 export const FAST_MODE_MULTIPLIER = 2.0;
 
+/**
+ * 这份价目表最后对照官方价目核实过的日期。界面上用来标注「现在看到的成本，
+ * 是按哪个时间点的价目表算出来的」，改价目表时记得同步改这个日期。
+ */
+export const PRICING_AS_OF = '2026-09-12';
+
 const PRICING = {
   'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25 },
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1.0 },
@@ -64,6 +70,21 @@ export function getPricing(model) {
     if (m.includes(needle)) return { ...PRICING[key], model: m, estimated: true };
   }
   return { ...PRICING['claude-sonnet-5'], model: m, estimated: true };
+}
+
+/** 给界面展示完整价目表：把缓存写入的两档乘数提前算成实际单价，不用 UI 自己重算。 */
+export function listPricing() {
+  return Object.keys(PRICING).map((model) => {
+    const p = PRICING[model];
+    return {
+      model,
+      input: p.input,
+      output: p.output,
+      cacheWrite5m: p.input * CACHE_WRITE_5M_MULTIPLIER,
+      cacheWrite1h: p.input * CACHE_WRITE_1H_MULTIPLIER,
+      cacheRead: p.cacheRead,
+    };
+  });
 }
 
 /**
