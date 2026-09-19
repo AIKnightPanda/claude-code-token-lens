@@ -126,8 +126,8 @@ jobs:
 
           ### Notes
 
-          The app only ever reads logs from `~/.claude/projects/` on your machine. It makes no
-          network requests and uploads nothing.
+          The app only ever reads session logs from `~/.claude/projects/` (Claude Code) and
+          `~/.codex/` (Codex) on your machine. It makes no network requests and uploads nothing.
           NOTES
           )
           gh release view "$TAG" >/dev/null 2>&1 \
